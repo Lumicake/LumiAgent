@@ -1,0 +1,14 @@
+// Xcode Configuration for LumiAgent
+PRODUCT_BUNDLE_IDENTIFIER = com.lumiagent.app
+PRODUCT_NAME = LumiAgent
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SWIFT_VERSION = 5.9
+
+// App Info
+INFOPLIST_KEY_CFBundleDisplayName = Lumi Agent
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.developer-tools
+INFOPLIST_KEY_NSHumanReadableCopyright = Copyright © 2026 Lumi Agent
+
+// Capabilities
+CODE_SIGN_STYLE = Automatic
+ENABLE_HARDENED_RUNTIME = YES
