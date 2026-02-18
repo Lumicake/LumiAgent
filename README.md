@@ -1,6 +1,8 @@
 # Lumi Agent
 
 A powerful AI-powered agentic platform for macOS, enabling autonomous AI agents to execute system commands with comprehensive security controls and audit logging.
+<img width="1392" height="764" alt="Screenshot 2026-02-18 at 3 31 09 PM" src="https://github.com/user-attachments/assets/ba6be5db-a672-485e-a1f9-2d94ccccbb23" />
+
 
 ## Features
 
