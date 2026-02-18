@@ -290,14 +290,14 @@ final class ToolRegistry {
 
         register(RegisteredTool(
             name: "execute_command",
-            description: "Execute a shell command and return its output",
+            description: "Execute any shell command via /bin/bash and return its output. Supports pipes, redirects, tilde expansion, and all shell syntax.",
             category: .systemCommands,
             riskLevel: .high,
             parameters: AIToolParameters(
                 properties: [
                     "command": AIToolProperty(
                         type: "string",
-                        description: "Shell command to execute"
+                        description: "Full shell command string, e.g. \"mkdir -p ~/Desktop/MyFolder\""
                     ),
                     "working_directory": AIToolProperty(
                         type: "string",
@@ -311,6 +311,44 @@ final class ToolRegistry {
                     command: args["command"] ?? "",
                     workingDirectory: args["working_directory"]
                 )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "open_application",
+            description: "Open a macOS application by name, e.g. Safari, Finder, Terminal, Notes, Calculator",
+            category: .systemCommands,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "name": AIToolProperty(
+                        type: "string",
+                        description: "Application name as it appears in /Applications, e.g. \"Safari\", \"Finder\""
+                    )
+                ],
+                required: ["name"]
+            ),
+            handler: { args in
+                try await SystemTools.openApplication(name: args["name"] ?? "")
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "open_url",
+            description: "Open a URL in the default browser, or any url-scheme (file://, mailto:, etc.)",
+            category: .systemCommands,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "url": AIToolProperty(
+                        type: "string",
+                        description: "URL to open, e.g. \"https://www.bing.com\""
+                    )
+                ],
+                required: ["url"]
+            ),
+            handler: { args in
+                try await SystemTools.openURL(url: args["url"] ?? "")
             }
         ))
 
@@ -907,6 +945,135 @@ final class ToolRegistry {
             }
         ))
 
+        // MARK: Screen Control
+        // Requires Accessibility access in System Settings → Privacy & Security → Accessibility.
+
+        register(RegisteredTool(
+            name: "get_screen_info",
+            description: "Get screen dimensions, current cursor position (top-left origin), and frontmost application name",
+            category: .screenControl,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await ScreenControlTools.getScreenInfo() }
+        ))
+
+        register(RegisteredTool(
+            name: "move_mouse",
+            description: "Move the mouse cursor to the given screen coordinates. (0,0) is the top-left corner of the screen.",
+            category: .screenControl,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "x": AIToolProperty(type: "string", description: "Horizontal coordinate from left edge of screen"),
+                    "y": AIToolProperty(type: "string", description: "Vertical coordinate from top edge of screen")
+                ],
+                required: ["x", "y"]
+            ),
+            handler: { args in
+                try await ScreenControlTools.moveMouse(
+                    x: Double(args["x"] ?? "0") ?? 0,
+                    y: Double(args["y"] ?? "0") ?? 0
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "click_mouse",
+            description: "Click the mouse at the given coordinates. Use clicks=2 for a double-click.",
+            category: .screenControl,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "x": AIToolProperty(type: "string", description: "Horizontal coordinate (top-left origin)"),
+                    "y": AIToolProperty(type: "string", description: "Vertical coordinate (top-left origin)"),
+                    "button": AIToolProperty(type: "string", description: "Mouse button: \"left\" (default) or \"right\"",
+                                            enumValues: ["left", "right"]),
+                    "clicks": AIToolProperty(type: "string", description: "Number of clicks: 1 (default) or 2 for double-click")
+                ],
+                required: ["x", "y"]
+            ),
+            handler: { args in
+                try await ScreenControlTools.clickMouse(
+                    x: Double(args["x"] ?? "0") ?? 0,
+                    y: Double(args["y"] ?? "0") ?? 0,
+                    button: args["button"] ?? "left",
+                    clicks: Int(args["clicks"] ?? "1") ?? 1
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "scroll_mouse",
+            description: "Scroll the mouse wheel at the given position. Positive delta_y scrolls up, negative scrolls down.",
+            category: .screenControl,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "x": AIToolProperty(type: "string", description: "Horizontal coordinate"),
+                    "y": AIToolProperty(type: "string", description: "Vertical coordinate"),
+                    "delta_y": AIToolProperty(type: "string", description: "Vertical scroll amount in pixels (positive = up, negative = down)"),
+                    "delta_x": AIToolProperty(type: "string", description: "Horizontal scroll amount in pixels (optional, default 0)")
+                ],
+                required: ["x", "y", "delta_y"]
+            ),
+            handler: { args in
+                try await ScreenControlTools.scrollMouse(
+                    x: Double(args["x"] ?? "0") ?? 0,
+                    y: Double(args["y"] ?? "0") ?? 0,
+                    deltaX: Int(args["delta_x"] ?? "0") ?? 0,
+                    deltaY: Int(args["delta_y"] ?? "0") ?? 0
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "type_text",
+            description: "Type a string of text into the currently focused application",
+            category: .screenControl,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "text": AIToolProperty(type: "string", description: "Text to type")
+                ],
+                required: ["text"]
+            ),
+            handler: { args in try await ScreenControlTools.typeText(text: args["text"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "press_key",
+            description: "Press a named key with optional modifier keys. Key names: return, tab, space, escape, delete, left, right, up, down, a-z, 0-9, f1-f8, home, end, pageup, pagedown",
+            category: .screenControl,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "key": AIToolProperty(type: "string", description: "Key name, e.g. \"return\", \"tab\", \"escape\", \"a\""),
+                    "modifiers": AIToolProperty(type: "string", description: "Comma-separated modifiers: command, shift, option, control (e.g. \"command,shift\")")
+                ],
+                required: ["key"]
+            ),
+            handler: { args in
+                try await ScreenControlTools.pressKey(
+                    key: args["key"] ?? "",
+                    modifiers: args["modifiers"] ?? ""
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "run_applescript",
+            description: "Execute an AppleScript and return its result. Useful for querying UI state, controlling apps, or automating complex workflows.",
+            category: .screenControl,
+            riskLevel: .high,
+            parameters: AIToolParameters(
+                properties: [
+                    "script": AIToolProperty(type: "string", description: "AppleScript source code to execute")
+                ],
+                required: ["script"]
+            ),
+            handler: { args in try await ScreenControlTools.runAppleScript(script: args["script"] ?? "") }
+        ))
+
         // MARK: Self-Modification
         // Intercepted by AppState.streamResponse — handler here is a placeholder only.
 
@@ -977,6 +1144,7 @@ enum ToolCategory: String, CaseIterable {
     case textData
     case clipboard
     case screenshot
+    case screenControl
 
     var displayName: String {
         switch self {
@@ -990,6 +1158,7 @@ enum ToolCategory: String, CaseIterable {
         case .textData:         return "Text & Data"
         case .clipboard:        return "Clipboard"
         case .screenshot:       return "Screenshot"
+        case .screenControl:    return "Screen Control"
         }
     }
 
@@ -1005,6 +1174,7 @@ enum ToolCategory: String, CaseIterable {
         case .textData:         return "text.alignleft"
         case .clipboard:        return "clipboard.fill"
         case .screenshot:       return "camera.fill"
+        case .screenControl:    return "cursorarrow.motionlines"
         }
     }
 }
@@ -1017,6 +1187,7 @@ typealias ToolHandler = ([String: String]) async throws -> String
 
 enum FileOperationHandler {
     static func readFile(path: String) async throws -> String {
+        let path = (path as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
             throw ToolError.fileNotFound(path)
@@ -1025,12 +1196,14 @@ enum FileOperationHandler {
     }
 
     static func writeFile(path: String, content: String) async throws -> String {
+        let path = (path as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: path)
         try content.write(to: url, atomically: true, encoding: .utf8)
         return "File written successfully: \(path)"
     }
 
     static func listDirectory(path: String) async throws -> String {
+        let path = (path as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: path)
         let items = try FileManager.default.contentsOfDirectory(
             at: url,
@@ -1047,25 +1220,32 @@ enum SystemCommandHandler {
         command: String,
         workingDirectory: String?
     ) async throws -> String {
-        let executor = ProcessExecutor()
-        let parts = command.split(separator: " ").map(String.init)
-        guard let cmd = parts.first else {
-            throw ToolError.invalidCommand
+        // Run through /bin/bash so the full shell syntax works:
+        // pipes, redirects, tilde expansion, quoted args, etc.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", command]
+
+        if let wd = workingDirectory {
+            let expanded = (wd as NSString).expandingTildeInPath
+            process.currentDirectoryURL = URL(fileURLWithPath: expanded)
         }
 
-        let args = Array(parts.dropFirst())
-        let workDir = workingDirectory.map { URL(fileURLWithPath: $0) }
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError  = errPipe
 
-        let result = try await executor.execute(
-            command: cmd,
-            arguments: args,
-            workingDirectory: workDir
-        )
+        try process.run()
+        process.waitUntilExit()
 
-        if result.success {
-            return result.output ?? ""
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        if process.terminationStatus == 0 {
+            return out.isEmpty ? "Done." : out
         } else {
-            throw ToolError.commandFailed(result.error ?? "Unknown error")
+            throw ToolError.commandFailed(err.isEmpty ? "exit \(process.terminationStatus)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 }
@@ -1075,6 +1255,7 @@ enum SystemCommandHandler {
 enum ToolError: Error, LocalizedError {
     case fileNotFound(String)
     case invalidCommand
+    case invalidURL(String)
     case commandFailed(String)
     case permissionDenied
     case notImplemented
@@ -1085,6 +1266,8 @@ enum ToolError: Error, LocalizedError {
             return "File not found: \(path)"
         case .invalidCommand:
             return "Invalid command format"
+        case .invalidURL(let url):
+            return "Invalid URL: \(url)"
         case .commandFailed(let error):
             return "Command failed: \(error)"
         case .permissionDenied:

@@ -13,6 +13,7 @@ struct ChatView: View {
     let conversationId: UUID
     @EnvironmentObject var appState: AppState
     @State private var inputText = ""
+    @State private var agentModeActive = false
 
     var conversation: Conversation? {
         appState.conversations.first { $0.id == conversationId }
@@ -64,6 +65,10 @@ struct ChatView: View {
                 }
             }
             Spacer()
+            // Agent Mode — only available in DMs
+            if !conv.isGroup {
+                AgentModeButton(isActive: $agentModeActive)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -146,7 +151,7 @@ struct ChatView: View {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         inputText = ""
-        appState.sendMessage(text, in: conversationId)
+        appState.sendMessage(text, in: conversationId, agentMode: agentModeActive)
     }
 
     private func agentFor(_ message: SpaceMessage) -> Agent? {
@@ -159,6 +164,50 @@ struct ChatView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(last.id, anchor: .bottom)
         }
+    }
+}
+
+// MARK: - Agent Mode Button
+
+struct AgentModeButton: View {
+    @Binding var isActive: Bool
+    @State private var isPulsing = false
+
+    var body: some View {
+        Button {
+            isActive.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                ZStack {
+                    if isActive {
+                        Circle()
+                            .fill(Color.red.opacity(0.3))
+                            .frame(width: 18, height: 18)
+                            .scaleEffect(isPulsing ? 1.4 : 1.0)
+                            .opacity(isPulsing ? 0.0 : 0.6)
+                            .animation(
+                                .easeInOut(duration: 1.0).repeatForever(autoreverses: false),
+                                value: isPulsing
+                            )
+                    }
+                    Circle()
+                        .fill(isActive ? Color.red : Color.secondary.opacity(0.5))
+                        .frame(width: 8, height: 8)
+                }
+                Text("Agent Mode")
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .foregroundStyle(isActive ? .red : .secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isActive ? Color.red.opacity(0.1) : Color.secondary.opacity(0.08))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(isActive ? "Agent Mode active — agent can control your screen. Click to disable." : "Enable Agent Mode to give the agent screen control.")
+        .onAppear { isPulsing = isActive }
+        .onChange(of: isActive) { isPulsing = isActive }
     }
 }
 

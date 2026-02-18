@@ -178,7 +178,7 @@ class AppState: ObservableObject {
 
     // MARK: - Messaging
 
-    func sendMessage(_ text: String, in conversationId: UUID) {
+    func sendMessage(_ text: String, in conversationId: UUID, agentMode: Bool = false) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
 
         let userMsg = SpaceMessage(role: .user, content: text)
@@ -195,12 +195,12 @@ class AppState: ObservableObject {
         for agent in targets {
             let history = conv.messages.filter { !$0.isStreaming }
             Task {
-                await streamResponse(from: agent, in: conversationId, history: history)
+                await streamResponse(from: agent, in: conversationId, history: history, agentMode: agentMode)
             }
         }
     }
 
-    private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage]) async {
+    private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false) async {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
 
         let placeholderId = UUID()
@@ -238,9 +238,33 @@ class AppState: ObservableObject {
             tools.append(selfTool.toAITool())
         }
 
+        // Inject screen control tools when Agent Mode is active
+        if agentMode {
+            let screenToolNames = [
+                "get_screen_info", "move_mouse", "click_mouse", "scroll_mouse",
+                "type_text", "press_key", "run_applescript", "take_screenshot"
+            ]
+            for name in screenToolNames {
+                if !tools.contains(where: { $0.name == name }),
+                   let t = ToolRegistry.shared.getTool(named: name) {
+                    tools.append(t.toAITool())
+                }
+            }
+        }
+
         // In a group chat, prepend context so each agent knows who else is present
         let effectiveSystemPrompt: String? = {
             var parts: [String] = []
+            if agentMode {
+                parts.append("""
+                You are in Agent Mode with direct control over the user's screen on macOS. \
+                You can move the mouse, click, type text, press keys, scroll, run AppleScript, and take screenshots. \
+                Screen coordinates use a top-left origin: (0, 0) is the top-left corner. \
+                Always call get_screen_info first, then take_screenshot to understand what's on screen before taking action. \
+                Work step by step and describe what you're doing as you go. \
+                Use run_applescript for complex UI interactions — it supports System Events accessibility APIs.
+                """)
+            }
             if isGroup {
                 let others = convParticipants.filter { $0.id != agent.id }.map { $0.name }
                 if !others.isEmpty {

@@ -10,6 +10,9 @@ import SwiftUI
 struct SettingsView: View {
     var body: some View {
         TabView {
+            AccountTab()
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+
             APIKeysTab()
                 .tabItem { Label("API Keys", systemImage: "key.fill") }
 
@@ -20,6 +23,154 @@ struct SettingsView: View {
                 .tabItem { Label("About", systemImage: "info.circle.fill") }
         }
         .frame(width: 560, height: 460)
+    }
+}
+
+// MARK: - Account Tab
+
+private struct AccountTab: View {
+    // Stored account state
+    @AppStorage("account.name") private var accountName = ""
+    @AppStorage("account.email") private var accountEmail = ""
+    @AppStorage("account.token") private var accountToken = ""
+    @AppStorage("account.joinedAt") private var joinedAt: Double = 0
+
+    // Preferences
+    @AppStorage("preferences.newsletter") private var wantsUpdates = false
+    @AppStorage("preferences.betaFeatures") private var betaFeatures = false
+    @AppStorage("preferences.rememberLogin") private var rememberLogin = true
+
+    // Form input
+    @State private var loginEmail = ""
+    @State private var loginPassword = ""
+    @State private var signupName = ""
+    @State private var signupEmail = ""
+    @State private var signupPassword = ""
+    @State private var signupConfirm = ""
+    @State private var statusMessage: String? = nil
+
+    private var isLoggedIn: Bool { !accountToken.isEmpty }
+    private var joinedDate: Date? { joinedAt > 0 ? Date(timeIntervalSince1970: joinedAt) : nil }
+
+    var body: some View {
+        Form {
+            if isLoggedIn {
+                Section("Your Account") {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(accountName.isEmpty ? "Lumi User" : accountName)
+                                .font(.headline)
+                            Text(accountEmail)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            if let joinedDate {
+                                Text("Joined " + joinedDate.formatted(date: .abbreviated, time: .omitted))
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        Spacer()
+                        Button(role: .destructive) { signOut() } label: {
+                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    }
+                }
+            } else {
+                Section("Log In") {
+                    TextField("Email", text: $loginEmail)
+                        .textContentType(.username)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Password", text: $loginPassword)
+                        .textContentType(.password)
+
+                    Button(action: signIn) {
+                        Label("Log In", systemImage: "arrow.right.circle.fill")
+                    }
+                    .disabled(loginEmail.isEmpty || loginPassword.isEmpty)
+                }
+
+                Section("Create Account") {
+                    TextField("Full Name", text: $signupName)
+                        .textContentType(.name)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Email", text: $signupEmail)
+                        .textContentType(.emailAddress)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Password", text: $signupPassword)
+                        .textContentType(.newPassword)
+                    SecureField("Confirm Password", text: $signupConfirm)
+                        .textContentType(.newPassword)
+
+                    Button(action: signUp) {
+                        Label("Sign Up", systemImage: "person.badge.plus")
+                    }
+                    .disabled(!canSubmitSignup)
+                }
+            }
+
+            Section("Preferences") {
+                Toggle("Remember me on this device", isOn: $rememberLogin)
+                Toggle("Product updates by email", isOn: $wantsUpdates)
+                Toggle("Early access to beta features", isOn: $betaFeatures)
+            }
+
+            if let statusMessage, !statusMessage.isEmpty {
+                Section {
+                    Label(statusMessage, systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { prefillForms() }
+    }
+
+    private var canSubmitSignup: Bool {
+        !signupName.isEmpty && !signupEmail.isEmpty && !signupPassword.isEmpty && signupPassword == signupConfirm
+    }
+
+    private func prefillForms() {
+        // Keep existing email handy for quick re-auth
+        loginEmail = accountEmail
+    }
+
+    private func signIn() {
+        guard !loginEmail.isEmpty else { return }
+        accountEmail = loginEmail
+        accountName = accountName.isEmpty ? loginEmail.components(separatedBy: "@").first ?? "Lumi User" : accountName
+        accountToken = UUID().uuidString
+        joinedAt = joinedAt == 0 ? Date().timeIntervalSince1970 : joinedAt
+        statusMessage = "Signed in as \(accountEmail)"
+        if !rememberLogin {
+            // Clear token on app relaunch if remember me is off
+            accountToken = ""
+        }
+        loginPassword = ""
+    }
+
+    private func signUp() {
+        guard canSubmitSignup else { return }
+        accountName = signupName
+        accountEmail = signupEmail
+        accountToken = UUID().uuidString
+        joinedAt = Date().timeIntervalSince1970
+        statusMessage = "Welcome, \(signupName)!"
+        if !rememberLogin { accountToken = "" }
+        signupPassword = ""
+        signupConfirm = ""
+    }
+
+    private func signOut() {
+        accountToken = ""
+        if !rememberLogin {
+            accountEmail = ""
+            accountName = ""
+            joinedAt = 0
+        }
+        statusMessage = "Signed out"
     }
 }
 

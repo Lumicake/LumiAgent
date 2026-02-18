@@ -10,43 +10,54 @@
 import Foundation
 import AppKit
 
+// MARK: - Path Helpers
+
+private func expandPath(_ path: String) -> String {
+    (path as NSString).expandingTildeInPath
+}
+
 // MARK: - File System Tools
 
 enum FileSystemTools {
     static func createDirectory(path: String) async throws -> String {
+        let expanded = expandPath(path)
         try FileManager.default.createDirectory(
-            atPath: path,
+            atPath: expanded,
             withIntermediateDirectories: true,
             attributes: nil
         )
-        return "Directory created: \(path)"
+        return "Directory created: \(expanded)"
     }
 
     static func deleteFile(path: String) async throws -> String {
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw ToolError.fileNotFound(path)
+        let expanded = expandPath(path)
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            throw ToolError.fileNotFound(expanded)
         }
-        try FileManager.default.removeItem(atPath: path)
-        return "Deleted: \(path)"
+        try FileManager.default.removeItem(atPath: expanded)
+        return "Deleted: \(expanded)"
     }
 
     static func moveFile(source: String, destination: String) async throws -> String {
-        guard FileManager.default.fileExists(atPath: source) else {
-            throw ToolError.fileNotFound(source)
+        let src = expandPath(source), dst = expandPath(destination)
+        guard FileManager.default.fileExists(atPath: src) else {
+            throw ToolError.fileNotFound(src)
         }
-        try FileManager.default.moveItem(atPath: source, toPath: destination)
-        return "Moved \(source) → \(destination)"
+        try FileManager.default.moveItem(atPath: src, toPath: dst)
+        return "Moved \(src) → \(dst)"
     }
 
     static func copyFile(source: String, destination: String) async throws -> String {
-        guard FileManager.default.fileExists(atPath: source) else {
-            throw ToolError.fileNotFound(source)
+        let src = expandPath(source), dst = expandPath(destination)
+        guard FileManager.default.fileExists(atPath: src) else {
+            throw ToolError.fileNotFound(src)
         }
-        try FileManager.default.copyItem(atPath: source, toPath: destination)
-        return "Copied \(source) → \(destination)"
+        try FileManager.default.copyItem(atPath: src, toPath: dst)
+        return "Copied \(src) → \(dst)"
     }
 
     static func searchFiles(directory: String, pattern: String) async throws -> String {
+        let directory = expandPath(directory)
         let enumerator = FileManager.default.enumerator(atPath: directory)
         var matches: [String] = []
         while let file = enumerator?.nextObject() as? String {
@@ -61,6 +72,7 @@ enum FileSystemTools {
     }
 
     static func getFileInfo(path: String) async throws -> String {
+        let path = expandPath(path)
         guard FileManager.default.fileExists(atPath: path) else {
             throw ToolError.fileNotFound(path)
         }
@@ -98,6 +110,7 @@ enum FileSystemTools {
     }
 
     static func appendToFile(path: String, content: String) async throws -> String {
+        let path = expandPath(path)
         let url = URL(fileURLWithPath: path)
         if FileManager.default.fileExists(atPath: path) {
             let fileHandle = try FileHandle(forWritingTo: url)
@@ -166,6 +179,38 @@ enum SystemTools {
             return selected.joined(separator: "\n")
         } else {
             throw ToolError.commandFailed(result.error ?? "ps failed")
+        }
+    }
+
+    static func openApplication(name: String) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "open -a \"\(name)\""]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            return "Opened \(name)."
+        } else {
+            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw ToolError.commandFailed(err.isEmpty ? "Could not open \(name)" : err)
+        }
+    }
+
+    static func openURL(url: String) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "open \"\(url)\""]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            return "Opened URL: \(url)"
+        } else {
+            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw ToolError.commandFailed(err.isEmpty ? "Could not open \(url)" : err)
         }
     }
 }
@@ -602,10 +647,159 @@ enum MemoryTools {
     }
 }
 
-// MARK: - Tool Error Extension
+// MARK: - Screen Control Tools
+// Requires Accessibility access: System Settings → Privacy & Security → Accessibility → LumiAgent
 
-extension ToolError {
-    static func invalidURL(_ url: String) -> ToolError {
-        .commandFailed("Invalid URL: \(url)")
+enum ScreenControlTools {
+
+    // MARK: Screen Info
+
+    static func getScreenInfo() async throws -> String {
+        let info = await MainActor.run { () -> (Int, Int, Int, Int, String) in
+            let frame = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+            let loc = NSEvent.mouseLocation
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"
+            let cursorY = Int(frame.height) - Int(loc.y)
+            return (Int(frame.width), Int(frame.height), Int(loc.x), cursorY, front)
+        }
+        return """
+        Screen size: \(info.0)×\(info.1) (coordinates: top-left origin)
+        Cursor position: (\(info.2), \(info.3))
+        Frontmost app: \(info.4)
+        """
+    }
+
+    // MARK: Mouse Control
+
+    /// Move mouse cursor. Coordinates: (0,0) = top-left of screen.
+    static func moveMouse(x: Double, y: Double) async throws -> String {
+        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
+        let point = CGPoint(x: x, y: h - y)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        return "Mouse moved to (\(Int(x)), \(Int(y)))"
+    }
+
+    /// Click at position. button: "left" or "right". clicks: 1 or 2 for double-click.
+    static func clickMouse(x: Double, y: Double, button: String, clicks: Int) async throws -> String {
+        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
+        let point = CGPoint(x: x, y: h - y)
+        let isRight = button.lowercased() == "right"
+        let btn: CGMouseButton = isRight ? .right : .left
+        let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
+        let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
+
+        let count = max(1, min(clicks, 2))
+        for clickState in 1...count {
+            let down = CGEvent(mouseEventSource: nil, mouseType: downType,
+                               mouseCursorPosition: point, mouseButton: btn)
+            down?.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
+            let up = CGEvent(mouseEventSource: nil, mouseType: upType,
+                             mouseCursorPosition: point, mouseButton: btn)
+            up?.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
+        }
+        let clickWord = count == 2 ? "Double-clicked" : "Clicked"
+        return "\(clickWord) \(button) button at (\(Int(x)), \(Int(y)))"
+    }
+
+    /// Scroll at position. Positive deltaY = scroll up, negative = scroll down.
+    static func scrollMouse(x: Double, y: Double, deltaX: Int, deltaY: Int) async throws -> String {
+        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
+        let point = CGPoint(x: x, y: h - y)
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                            wheel1: Int32(deltaY), wheel2: Int32(deltaX), wheel3: 0)
+        event?.location = point
+        event?.post(tap: .cghidEventTap)
+        return "Scrolled at (\(Int(x)), \(Int(y))): deltaY=\(deltaY), deltaX=\(deltaX)"
+    }
+
+    // MARK: Keyboard Control
+
+    /// Type a string of text using AppleScript's keystroke command.
+    static func typeText(text: String) async throws -> String {
+        let safe = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "System Events"
+            keystroke "\(safe)"
+        end tell
+        """
+        try await runAppleScript(script: script)
+        return "Typed: \(text)"
+    }
+
+    /// Press a named key (e.g. "return", "tab", "escape", "a") with optional modifier keys.
+    /// modifiers: comma-separated list of "command", "shift", "option", "control"
+    static func pressKey(key: String, modifiers: String) async throws -> String {
+        let mods = modifiers
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .compactMap { mod -> String? in
+                switch mod {
+                case "command", "cmd": return "command down"
+                case "shift": return "shift down"
+                case "option", "alt": return "option down"
+                case "control", "ctrl": return "control down"
+                case "": return nil
+                default: return nil
+                }
+            }
+        let code = keyNameToCode(key)
+        let modStr = mods.isEmpty ? "" : " using {\(mods.joined(separator: ", "))}"
+        let script = """
+        tell application "System Events"
+            key code \(code)\(modStr)
+        end tell
+        """
+        try await runAppleScript(script: script)
+        return "Pressed key: \(key)\(modifiers.isEmpty ? "" : " + \(modifiers)")"
+    }
+
+    // MARK: AppleScript
+
+    /// Run arbitrary AppleScript and return the result.
+    @discardableResult
+    static func runAppleScript(script: String) async throws -> String {
+        try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var errDict: NSDictionary?
+                let appleScript = NSAppleScript(source: script)
+                if let result = appleScript?.executeAndReturnError(&errDict) {
+                    cont.resume(returning: result.stringValue ?? "(script completed, no return value)")
+                } else {
+                    let msg = errDict?["NSAppleScriptErrorMessage"] as? String
+                        ?? "AppleScript execution failed"
+                    cont.resume(throwing: ToolError.commandFailed(msg))
+                }
+            }
+        }
+    }
+
+    // MARK: Key Code Lookup
+
+    private static func keyNameToCode(_ name: String) -> Int {
+        switch name.lowercased() {
+        case "a": return 0;  case "s": return 1;  case "d": return 2;  case "f": return 3
+        case "h": return 4;  case "g": return 5;  case "z": return 6;  case "x": return 7
+        case "c": return 8;  case "v": return 9;  case "b": return 11; case "q": return 12
+        case "w": return 13; case "e": return 14; case "r": return 15; case "y": return 16
+        case "t": return 17; case "1": return 18; case "2": return 19; case "3": return 20
+        case "4": return 21; case "6": return 22; case "5": return 23; case "=": return 24
+        case "9": return 25; case "7": return 26; case "-": return 27; case "8": return 28
+        case "0": return 29; case "o": return 31; case "u": return 32; case "i": return 34
+        case "p": return 35; case "l": return 37; case "j": return 38; case "k": return 40
+        case "n": return 45; case "m": return 46; case "return", "enter": return 36
+        case "tab": return 48; case "space": return 49; case "delete", "backspace": return 51
+        case "escape", "esc": return 53; case "left": return 123; case "right": return 124
+        case "down": return 125; case "up": return 126; case "home": return 115
+        case "end": return 119; case "pageup": return 116; case "pagedown": return 121
+        case "f1": return 122; case "f2": return 120; case "f3": return 99; case "f4": return 118
+        case "f5": return 96;  case "f6": return 97;  case "f7": return 98; case "f8": return 100
+        default: return 36
+        }
     }
 }
+
