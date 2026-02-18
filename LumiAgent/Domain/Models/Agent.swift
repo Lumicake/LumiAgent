@@ -93,13 +93,43 @@ enum AIProvider: String, Codable, CaseIterable {
     var defaultModels: [String] {
         switch self {
         case .openai:
-            return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+            return [
+                "o3",
+                "o4-mini",
+                "gpt-4.1",
+                "gpt-4.1-mini",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-4-turbo",
+            ]
         case .anthropic:
-            return ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+            return [
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5-20251001",
+            ]
         case .gemini:
-            return ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05", "gemini-1.5-pro", "gemini-1.5-flash"]
+            return [
+                "gemini-2.5-pro-preview-06-05",
+                "gemini-2.5-flash-preview-05-20",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite",
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
+            ]
         case .ollama:
-            return ["llama3.2:latest", "mistral:latest", "qwen3:4b", "gemma3:4b", "deepseek-r1:1.5b"]
+            return [
+                "llama3.3:latest",
+                "llama3.2:latest",
+                "qwen3:latest",
+                "qwen2.5:latest",
+                "deepseek-r1:latest",
+                "mistral:latest",
+                "phi4:latest",
+                "gemma3:latest",
+                "codellama:latest",
+                "llava:latest",
+            ]
         }
     }
 }

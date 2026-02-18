@@ -27,12 +27,12 @@ struct SimpleAgentForm: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Provider:")
                 Picker("Provider", selection: $selectedProvider) {
-                    Text("OpenAI").tag(AIProvider.openai)
-                    Text("Anthropic").tag(AIProvider.anthropic)
-                    Text("Ollama").tag(AIProvider.ollama)
+                    ForEach(AIProvider.allCases, id: \.self) { p in
+                        Text(p.rawValue).tag(p)
+                    }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 300)
+                .frame(width: 360)
             }
 
             HStack(spacing: 12) {

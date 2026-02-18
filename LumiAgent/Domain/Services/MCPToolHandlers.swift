@@ -183,18 +183,54 @@ enum SystemTools {
     }
 
     static func openApplication(name: String) async throws -> String {
+        // Sanitize: strip characters that could break the shell script
+        let safe = name.replacingOccurrences(of: "\"", with: "")
+                       .replacingOccurrences(of: "`", with: "")
+                       .replacingOccurrences(of: "$", with: "")
+                       .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Strategy:
+        // 1. open -a "name"          — exact bundle name (fastest)
+        // 2. mdfind                  — Spotlight fuzzy search across all volumes
+        // 3. find in common dirs     — /Applications, ~/Applications, /System/Applications
+        let script = """
+        set -e
+        if open -a "\(safe)" 2>/dev/null; then
+            echo "Opened \(safe)"
+            exit 0
+        fi
+        APP=$(mdfind "kMDItemContentType == 'com.apple.application-bundle'" -name "\(safe)" 2>/dev/null | head -1)
+        if [ -n "$APP" ]; then
+            open "$APP"
+            echo "Opened $APP"
+            exit 0
+        fi
+        APP=$(find /Applications ~/Applications /System/Applications /System/Library/CoreServices -maxdepth 4 -iname "*\(safe)*.app" 2>/dev/null | head -1)
+        if [ -n "$APP" ]; then
+            open "$APP"
+            echo "Opened $APP"
+            exit 0
+        fi
+        echo "Could not find application: \(safe)" >&2
+        exit 1
+        """
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "open -a \"\(name)\""]
+        process.arguments = ["-c", script]
+        let outPipe = Pipe()
         let errPipe = Pipe()
+        process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
         process.waitUntilExit()
+
         if process.terminationStatus == 0 {
-            return "Opened \(name)."
+            let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return out.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw ToolError.commandFailed(err.isEmpty ? "Could not open \(name)" : err)
+            throw ToolError.commandFailed(err.isEmpty ? "Could not open \(safe)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
