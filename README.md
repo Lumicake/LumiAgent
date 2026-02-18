@@ -46,6 +46,8 @@ All tool calls pass through a risk-based approval system and are written to an i
 - Agents see each other's messages in groups (context-aware multi-agent conversations)
 - Live **streaming responses** with full markdown rendering
 - Inline code blocks with language labels and horizontal scroll
+<img width="1211" height="764" alt="Screenshot 2026-02-18 at 3 55 40 PM" src="https://github.com/user-attachments/assets/41604248-863c-4191-b26f-6a0a2bb9b39e" />
+
 
 ### Agent Mode — Screen Control
 
