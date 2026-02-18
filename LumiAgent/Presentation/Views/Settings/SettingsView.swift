@@ -32,12 +32,15 @@ private struct APIKeysTab: View {
     @State private var openAIKey = ""
     @State private var anthropicKey = ""
     @State private var geminiKey = ""
+    @State private var braveKey = ""
 
     // Saved-flash state
     @State private var savedProvider: AIProvider? = nil
+    @State private var braveKeySaved = false
 
-    // Whether a key already exists in keychain
+    // Whether a key already exists
     @State private var hasKey: [AIProvider: Bool] = [:]
+    @State private var hasBraveKey = false
 
     var body: some View {
         Form {
@@ -64,6 +67,47 @@ private struct APIKeysTab: View {
                 placeholder: "AIza…",
                 key: $geminiKey
             )
+
+            // Brave Search API
+            Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Brave Search")
+                            .font(.headline)
+                        Text(hasBraveKey ? "API key saved" : "No key stored — web_search uses DuckDuckGo fallback")
+                            .font(.caption)
+                            .foregroundStyle(hasBraveKey ? .green : .secondary)
+                    }
+                    Spacer()
+                    if braveKeySaved {
+                        Label("Saved", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.callout)
+                            .transition(.opacity)
+                    }
+                }
+
+                SecureField(hasBraveKey ? "Enter new key to replace…" : "BSA…", text: $braveKey)
+
+                Button("Save Brave Search Key") {
+                    UserDefaults.standard.set(braveKey, forKey: "settings.braveAPIKey")
+                    braveKey = ""
+                    hasBraveKey = true
+                    braveKeySaved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { braveKeySaved = false }
+                }
+                .disabled(braveKey.isEmpty)
+                .foregroundStyle(.secondary)
+
+                Link("Get a free Brave Search API key →",
+                     destination: URL(string: "https://brave.com/search/api/")!)
+                    .font(.caption)
+            }
+
 
             // Ollama — URL only, no key
             Section {
@@ -147,6 +191,8 @@ private struct APIKeysTab: View {
         for provider in [AIProvider.openai, .anthropic, .gemini] {
             hasKey[provider] = (try? repo.getAPIKey(for: provider)).flatMap { $0.isEmpty ? nil : $0 } != nil
         }
+        let bk = UserDefaults.standard.string(forKey: "settings.braveAPIKey") ?? ""
+        hasBraveKey = !bk.isEmpty
     }
 
     private func save(_ key: String, for provider: AIProvider) {

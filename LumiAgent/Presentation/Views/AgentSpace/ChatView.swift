@@ -213,13 +213,18 @@ struct MessageBubble: View {
         Group {
             if message.isStreaming && message.content.isEmpty {
                 TypingIndicator()
-            } else {
-                MentionText(text: message.content, agents: allAgents)
+            } else if isUser {
+                Text(message.content)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(isUser ? Color.accentColor : Color.secondary.opacity(0.12))
-                    .foregroundColor(isUser ? .white : .primary)
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else {
+                MarkdownMessageView(text: message.content, agents: allAgents)
+                    .textSelection(.enabled)
+                    .background(Color.secondary.opacity(0.12))
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
@@ -227,7 +232,94 @@ struct MessageBubble: View {
     }
 }
 
+// MARK: - Markdown Message View
+// Splits agent text into plain-text segments and fenced code blocks,
+// rendering each appropriately.
+
+struct MarkdownMessageView: View {
+    let text: String
+    let agents: [Agent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
+                switch seg {
+                case .prose(let s):
+                    MentionText(text: s, agents: agents)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                case .code(let code, let lang):
+                    CodeBlockView(code: code, language: lang)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private enum Segment { case prose(String); case code(String, String?) }
+
+    private var segments: [Segment] {
+        var result: [Segment] = []
+        var remaining = text
+        let marker = "```"
+
+        while let start = remaining.range(of: marker) {
+            let before = String(remaining[..<start.lowerBound])
+            if !before.isEmpty { result.append(.prose(before)) }
+            remaining = String(remaining[start.upperBound...])
+
+            // First line is the optional language tag
+            let nlIdx = remaining.firstIndex(of: "\n") ?? remaining.endIndex
+            let lang = String(remaining[..<nlIdx]).trimmingCharacters(in: .whitespaces)
+            remaining = nlIdx < remaining.endIndex
+                ? String(remaining[remaining.index(after: nlIdx)...])
+                : ""
+
+            if let end = remaining.range(of: marker) {
+                result.append(.code(String(remaining[..<end.lowerBound]), lang.isEmpty ? nil : lang))
+                remaining = String(remaining[end.upperBound...])
+            } else {
+                result.append(.prose(marker + lang + "\n" + remaining))
+                remaining = ""
+            }
+        }
+
+        if !remaining.isEmpty { result.append(.prose(remaining)) }
+        return result.isEmpty ? [.prose(text)] : result
+    }
+}
+
+// MARK: - Code Block View
+
+struct CodeBlockView: View {
+    let code: String
+    let language: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let lang = language {
+                Text(lang)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code.trimmingCharacters(in: .newlines))
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(Color.black.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 // MARK: - Mention Text
+// Renders inline markdown (bold, italic, inline code, links) plus @mention highlights.
 
 struct MentionText: View {
     let text: String
@@ -239,14 +331,20 @@ struct MentionText: View {
     }
 
     private var attributedText: AttributedString {
-        var result = AttributedString(text)
+        // Parse inline markdown first
+        var result = (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+
+        // Then highlight @mentions on top
         for agent in agents {
             let mention = "@\(agent.name)"
             var searchStart = result.startIndex
             while searchStart < result.endIndex,
                   let range = result[searchStart...].range(of: mention) {
                 result[range].foregroundColor = .accentColor
-                result[range].font = Font.body.weight(.semibold)
+                result[range].font = .body.weight(.semibold)
                 searchStart = range.upperBound
             }
         }

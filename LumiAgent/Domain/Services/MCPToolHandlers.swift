@@ -223,10 +223,42 @@ enum NetworkTools {
     }
 
     static func webSearch(query: String) async throws -> String {
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1") else {
-            throw ToolError.invalidURL(query)
+        let braveKey = UserDefaults.standard.string(forKey: "settings.braveAPIKey") ?? ""
+        if !braveKey.isEmpty {
+            return try await braveSearch(query: query, apiKey: braveKey)
         }
+        return try await duckDuckGoSearch(query: query)
+    }
+
+    private static func braveSearch(query: String, apiKey: String) async throws -> String {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.search.brave.com/res/v1/web/search?q=\(encoded)&count=10")
+        else { throw ToolError.invalidURL(query) }
+
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token")
+
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let web = json["web"] as? [String: Any],
+              let results = web["results"] as? [[String: Any]], !results.isEmpty
+        else { return "No Brave results found for: \(query)" }
+
+        var output = "Search results for '\(query)':\n\n"
+        for (i, r) in results.prefix(10).enumerated() {
+            let title = r["title"] as? String ?? "No title"
+            let url   = r["url"]   as? String ?? ""
+            let desc  = r["description"] as? String ?? ""
+            output += "\(i + 1). \(title)\n   \(url)\n   \(desc)\n\n"
+        }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func duckDuckGoSearch(query: String) async throws -> String {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1")
+        else { throw ToolError.invalidURL(query) }
 
         let (data, _) = try await URLSession.shared.data(from: url)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -234,25 +266,16 @@ enum NetworkTools {
         }
 
         var output = ""
-
-        if let abstractText = json["AbstractText"] as? String, !abstractText.isEmpty {
-            output += "Summary:\n\(abstractText)\n\n"
+        if let abstract = json["AbstractText"] as? String, !abstract.isEmpty {
+            output += "Summary:\n\(abstract)\n\n"
         }
-
-        if let relatedTopics = json["RelatedTopics"] as? [[String: Any]] {
-            let texts = relatedTopics.compactMap { $0["Text"] as? String }.filter { !$0.isEmpty }.prefix(5)
+        if let related = json["RelatedTopics"] as? [[String: Any]] {
+            let texts = related.compactMap { $0["Text"] as? String }.filter { !$0.isEmpty }.prefix(5)
             if !texts.isEmpty {
-                output += "Related Topics:\n"
-                for text in texts {
-                    output += "- \(text)\n"
-                }
+                output += "Related:\n" + texts.map { "- \($0)" }.joined(separator: "\n")
             }
         }
-
-        if output.isEmpty {
-            return "No results found for: \(query)"
-        }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? "No results found for: \(query) — add a Brave API key in Settings for better results." : output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

@@ -906,6 +906,38 @@ final class ToolRegistry {
                 try await MemoryTools.delete(key: args["key"] ?? "")
             }
         ))
+
+        // MARK: Self-Modification
+        // Intercepted by AppState.streamResponse — handler here is a placeholder only.
+
+        register(RegisteredTool(
+            name: "update_self",
+            description: "Update your own agent configuration. Use this when the user asks you to change your name, personality, system prompt, model, or temperature. Only call this when explicitly asked.",
+            category: .systemCommands,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "name": AIToolProperty(
+                        type: "string",
+                        description: "New agent name (optional)"
+                    ),
+                    "system_prompt": AIToolProperty(
+                        type: "string",
+                        description: "New system prompt that defines your personality and behavior (optional)"
+                    ),
+                    "model": AIToolProperty(
+                        type: "string",
+                        description: "New model to use, e.g. gpt-4o or claude-sonnet-4-6 (optional)"
+                    ),
+                    "temperature": AIToolProperty(
+                        type: "string",
+                        description: "New temperature between 0.0 (focused) and 1.0 (creative) (optional)"
+                    )
+                ],
+                required: []
+            ),
+            handler: { _ in "Self-update applied." }
+        ))
     }
 }
 

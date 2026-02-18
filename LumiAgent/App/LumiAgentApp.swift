@@ -103,6 +103,37 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Apply an agent's self-modification request. Returns a human-readable result string.
+    func applySelfUpdate(_ args: [String: String], agentId: UUID) -> String {
+        guard let idx = agents.firstIndex(where: { $0.id == agentId }) else {
+            return "Error: agent not found."
+        }
+        var updated = agents[idx]
+        var changes: [String] = []
+
+        if let name = args["name"], !name.isEmpty {
+            updated.name = name
+            changes.append("name → \"\(name)\"")
+        }
+        if let prompt = args["system_prompt"] {
+            updated.configuration.systemPrompt = prompt.isEmpty ? nil : prompt
+            changes.append("system prompt updated")
+        }
+        if let model = args["model"], !model.isEmpty {
+            updated.configuration.model = model
+            changes.append("model → \(model)")
+        }
+        if let tempStr = args["temperature"], let temp = Double(tempStr) {
+            updated.configuration.temperature = max(0, min(2, temp))
+            changes.append("temperature → \(temp)")
+        }
+
+        guard !changes.isEmpty else { return "No changes requested." }
+        updated.updatedAt = Date()
+        updateAgent(updated)
+        return "Configuration updated: \(changes.joined(separator: ", "))."
+    }
+
     // MARK: - Conversation management
 
     private func loadConversations() {
@@ -173,47 +204,128 @@ class AppState: ObservableObject {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
 
         let placeholderId = UUID()
-        let placeholder = SpaceMessage(
-            id: placeholderId,
-            role: .agent,
-            content: "",
-            agentId: agent.id,
-            isStreaming: true
-        )
-        conversations[index].messages.append(placeholder)
+        conversations[index].messages.append(SpaceMessage(
+            id: placeholderId, role: .agent, content: "",
+            agentId: agent.id, isStreaming: true
+        ))
 
-        let aiMessages: [AIMessage] = history.map { msg in
-            AIMessage(
-                role: msg.role == .user ? .user : .assistant,
-                content: msg.content
-            )
+        // Build AI message history.
+        // In a group chat, other agents' messages are injected as user-role turns
+        // prefixed with their name so this agent knows who said what.
+        let convParticipants = agents.filter { conversations[index].participantIds.contains($0.id) }
+        let isGroup = convParticipants.count > 1
+        var aiMessages: [AIMessage] = history.compactMap { msg in
+            if msg.role == .user {
+                return AIMessage(role: .user, content: msg.content)
+            } else if let senderId = msg.agentId {
+                if senderId == agent.id {
+                    // Own previous message → assistant role
+                    return AIMessage(role: .assistant, content: msg.content)
+                } else if isGroup {
+                    // Another agent in the group → inject as user turn with name prefix
+                    let senderName = agents.first { $0.id == senderId }?.name ?? "Agent"
+                    return AIMessage(role: .user, content: "[\(senderName)]: \(msg.content)")
+                }
+            }
+            return nil
         }
 
         let repo = AIProviderRepository()
-        do {
-            let stream = try await repo.sendMessageStream(
-                provider: agent.configuration.provider,
-                model: agent.configuration.model,
-                messages: aiMessages,
-                systemPrompt: agent.configuration.systemPrompt,
-                temperature: agent.configuration.temperature,
-                maxTokens: agent.configuration.maxTokens
-            )
+        // Always include update_self so any agent can modify itself on request
+        var tools = ToolRegistry.shared.getToolsForAI(enabledNames: agent.configuration.enabledTools)
+        if !tools.contains(where: { $0.name == "update_self" }),
+           let selfTool = ToolRegistry.shared.getTool(named: "update_self") {
+            tools.append(selfTool.toAITool())
+        }
 
-            for try await chunk in stream {
-                if let content = chunk.content, !content.isEmpty {
-                    if let ci = conversations.firstIndex(where: { $0.id == conversationId }),
-                       let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
-                        conversations[ci].messages[mi].content += content
-                    }
+        // In a group chat, prepend context so each agent knows who else is present
+        let effectiveSystemPrompt: String? = {
+            var parts: [String] = []
+            if isGroup {
+                let others = convParticipants.filter { $0.id != agent.id }.map { $0.name }
+                if !others.isEmpty {
+                    parts.append("You are \(agent.name). You are in a group chat with: \(others.joined(separator: ", ")). Their messages appear prefixed with [Name]:.")
                 }
             }
-        } catch {
-            // Show error in the message bubble
+            if let base = agent.configuration.systemPrompt, !base.isEmpty { parts.append(base) }
+            return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+        }()
+
+        func updatePlaceholder(_ text: String) {
             if let ci = conversations.firstIndex(where: { $0.id == conversationId }),
                let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
-                conversations[ci].messages[mi].content = "Error: \(error.localizedDescription)"
+                conversations[ci].messages[mi].content = text
             }
+        }
+
+        do {
+            if tools.isEmpty {
+                // No tools — stream normally
+                let stream = try await repo.sendMessageStream(
+                    provider: agent.configuration.provider,
+                    model: agent.configuration.model,
+                    messages: aiMessages,
+                    systemPrompt: effectiveSystemPrompt,
+                    temperature: agent.configuration.temperature,
+                    maxTokens: agent.configuration.maxTokens
+                )
+                var accumulated = ""
+                for try await chunk in stream {
+                    if let content = chunk.content, !content.isEmpty {
+                        accumulated += content
+                        updatePlaceholder(accumulated)
+                    }
+                }
+            } else {
+                // Has tools — run a non-streaming tool execution loop
+                var iteration = 0
+                var finalContent = ""
+                while iteration < 10 {
+                    iteration += 1
+                    let response = try await repo.sendMessage(
+                        provider: agent.configuration.provider,
+                        model: agent.configuration.model,
+                        messages: aiMessages,
+                        systemPrompt: effectiveSystemPrompt,
+                        tools: tools,
+                        temperature: agent.configuration.temperature,
+                        maxTokens: agent.configuration.maxTokens
+                    )
+
+                    aiMessages.append(AIMessage(
+                        role: .assistant,
+                        content: response.content ?? "",
+                        toolCalls: response.toolCalls
+                    ))
+
+                    if let content = response.content, !content.isEmpty {
+                        finalContent = content
+                        updatePlaceholder(content)
+                    }
+
+                    guard let toolCalls = response.toolCalls, !toolCalls.isEmpty else { break }
+
+                    // Show which tools are running
+                    let names = toolCalls.map { $0.name }.joined(separator: ", ")
+                    updatePlaceholder("Running: \(names)…")
+
+                    for toolCall in toolCalls {
+                        let result: String
+                        if toolCall.name == "update_self" {
+                            result = applySelfUpdate(toolCall.arguments, agentId: agent.id)
+                        } else if let tool = ToolRegistry.shared.getTool(named: toolCall.name) {
+                            do { result = try await tool.handler(toolCall.arguments) }
+                            catch { result = "Error: \(error.localizedDescription)" }
+                        } else {
+                            result = "Tool not found: \(toolCall.name)"
+                        }
+                        aiMessages.append(AIMessage(role: .tool, content: result, toolCallId: toolCall.id))
+                    }
+                }
+                if finalContent.isEmpty { updatePlaceholder("(no response)") }
+            }
+        } catch {
+            updatePlaceholder("Error: \(error.localizedDescription)")
         }
 
         // Mark streaming done
@@ -221,7 +333,6 @@ class AppState: ObservableObject {
            let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
             conversations[ci].messages[mi].isStreaming = false
         }
-
         if let ci = conversations.firstIndex(where: { $0.id == conversationId }) {
             conversations[ci].updatedAt = Date()
         }
