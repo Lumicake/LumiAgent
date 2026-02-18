@@ -1,0 +1,588 @@
+//
+//  MCPToolHandlers.swift
+//  LumiAgent
+//
+//  Created by Lumi Agent on 2026-02-18.
+//
+//  Real implementations for all MCP tool handlers
+//
+
+import Foundation
+import AppKit
+
+// MARK: - File System Tools
+
+enum FileSystemTools {
+    static func createDirectory(path: String) async throws -> String {
+        try FileManager.default.createDirectory(
+            atPath: path,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        return "Directory created: \(path)"
+    }
+
+    static func deleteFile(path: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ToolError.fileNotFound(path)
+        }
+        try FileManager.default.removeItem(atPath: path)
+        return "Deleted: \(path)"
+    }
+
+    static func moveFile(source: String, destination: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: source) else {
+            throw ToolError.fileNotFound(source)
+        }
+        try FileManager.default.moveItem(atPath: source, toPath: destination)
+        return "Moved \(source) → \(destination)"
+    }
+
+    static func copyFile(source: String, destination: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: source) else {
+            throw ToolError.fileNotFound(source)
+        }
+        try FileManager.default.copyItem(atPath: source, toPath: destination)
+        return "Copied \(source) → \(destination)"
+    }
+
+    static func searchFiles(directory: String, pattern: String) async throws -> String {
+        let enumerator = FileManager.default.enumerator(atPath: directory)
+        var matches: [String] = []
+        while let file = enumerator?.nextObject() as? String {
+            if file.range(of: pattern, options: .regularExpression) != nil {
+                matches.append((directory as NSString).appendingPathComponent(file))
+            }
+        }
+        if matches.isEmpty {
+            return "No files matching '\(pattern)' found in \(directory)"
+        }
+        return matches.joined(separator: "\n")
+    }
+
+    static func getFileInfo(path: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ToolError.fileNotFound(path)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: path)
+        let size = attrs[.size] as? Int ?? 0
+        let created = attrs[.creationDate] as? Date
+        let modified = attrs[.modificationDate] as? Date
+        let fileType = attrs[.type] as? FileAttributeType
+        let posixPerms = attrs[.posixPermissions] as? Int ?? 0
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+
+        let typeStr: String
+        if fileType == .typeDirectory {
+            typeStr = "Directory"
+        } else if fileType == .typeSymbolicLink {
+            typeStr = "Symbolic Link"
+        } else {
+            typeStr = "File"
+        }
+
+        let permsStr = String(posixPerms, radix: 8)
+
+        var lines = [
+            "Path: \(path)",
+            "Type: \(typeStr)",
+            "Size: \(size) bytes (\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))",
+            "Permissions: \(permsStr)"
+        ]
+        if let c = created { lines.append("Created: \(formatter.string(from: c))") }
+        if let m = modified { lines.append("Modified: \(formatter.string(from: m))") }
+        return lines.joined(separator: "\n")
+    }
+
+    static func appendToFile(path: String, content: String) async throws -> String {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            let fileHandle = try FileHandle(forWritingTo: url)
+            defer { fileHandle.closeFile() }
+            fileHandle.seekToEndOfFile()
+            if let data = content.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+        } else {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        }
+        return "Appended to \(path)"
+    }
+}
+
+// MARK: - System Tools
+
+enum SystemTools {
+    static func getCurrentDatetime() async throws -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        formatter.timeStyle = .long
+        return formatter.string(from: Date())
+    }
+
+    static func getSystemInfo() async throws -> String {
+        let info = ProcessInfo.processInfo
+        let totalRAM = Int64(info.physicalMemory)
+        let ramStr = ByteCountFormatter.string(fromByteCount: totalRAM, countStyle: .memory)
+
+        var lines = [
+            "Hostname: \(info.hostName)",
+            "OS Version: \(info.operatingSystemVersionString)",
+            "CPU Cores (logical): \(info.processorCount)",
+            "Active Processors: \(info.activeProcessorCount)",
+            "Physical Memory: \(ramStr)",
+            "Process ID: \(info.processIdentifier)",
+            "Uptime: \(Int(info.systemUptime)) seconds"
+        ]
+
+        // Try sysctl for CPU brand string
+        let executor = ProcessExecutor()
+        let cpuResult = try? await executor.execute(
+            command: "sysctl",
+            arguments: ["-n", "machdep.cpu.brand_string"]
+        )
+        if let cpuBrand = cpuResult?.output?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cpuBrand.isEmpty {
+            lines.insert("CPU: \(cpuBrand)", at: 2)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    static func listRunningProcesses() async throws -> String {
+        let executor = ProcessExecutor()
+        // Use /bin/ps directly to avoid env lookup issues with sorting
+        let result = try await executor.execute(
+            command: "ps",
+            arguments: ["aux", "-r"]
+        )
+        if result.success, let output = result.output {
+            let lines = output.components(separatedBy: "\n")
+            // Header + top 20 processes
+            let selected = Array(lines.prefix(21))
+            return selected.joined(separator: "\n")
+        } else {
+            throw ToolError.commandFailed(result.error ?? "ps failed")
+        }
+    }
+}
+
+// MARK: - Network Tools
+
+enum NetworkTools {
+    static func fetchURL(url urlString: String) async throws -> String {
+        guard let url = URL(string: urlString) else {
+            throw ToolError.invalidURL(urlString)
+        }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? "<binary data>"
+        let truncated = body.count > 8000 ? String(body.prefix(8000)) + "\n...[truncated]" : body
+        return "Status: \(statusCode)\n\n\(truncated)"
+    }
+
+    static func httpRequest(
+        url urlString: String,
+        method: String,
+        headers: String?,
+        body: String?
+    ) async throws -> String {
+        guard let url = URL(string: urlString) else {
+            throw ToolError.invalidURL(urlString)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method.uppercased()
+
+        // Parse headers JSON
+        if let headersJSON = headers,
+           let headersData = headersJSON.data(using: .utf8),
+           let headersDict = try? JSONSerialization.jsonObject(with: headersData) as? [String: String] {
+            for (key, value) in headersDict {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+
+        // Set body
+        if let body = body {
+            request.httpBody = body.data(using: .utf8)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let responseHeaders = (response as? HTTPURLResponse)?.allHeaderFields as? [String: String] ?? [:]
+        let responseBody = String(data: data, encoding: .utf8) ?? "<binary data>"
+        let truncated = responseBody.count > 8000 ? String(responseBody.prefix(8000)) + "\n...[truncated]" : responseBody
+
+        var result = "Status: \(statusCode)\n"
+        result += "Headers: \(responseHeaders)\n\n"
+        result += truncated
+        return result
+    }
+
+    static func webSearch(query: String) async throws -> String {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.duckduckgo.com/?q=\(encoded)&format=json&no_html=1&skip_disambig=1") else {
+            throw ToolError.invalidURL(query)
+        }
+
+        let (data, _) = try await URLSession.shared.data(from: url)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "No results found for: \(query)"
+        }
+
+        var output = ""
+
+        if let abstractText = json["AbstractText"] as? String, !abstractText.isEmpty {
+            output += "Summary:\n\(abstractText)\n\n"
+        }
+
+        if let relatedTopics = json["RelatedTopics"] as? [[String: Any]] {
+            let texts = relatedTopics.compactMap { $0["Text"] as? String }.filter { !$0.isEmpty }.prefix(5)
+            if !texts.isEmpty {
+                output += "Related Topics:\n"
+                for text in texts {
+                    output += "- \(text)\n"
+                }
+            }
+        }
+
+        if output.isEmpty {
+            return "No results found for: \(query)"
+        }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// MARK: - Git Tools
+
+enum GitTools {
+    static func status(directory: String) async throws -> String {
+        let executor = ProcessExecutor()
+        let workDir = URL(fileURLWithPath: directory)
+        let result = try await executor.execute(
+            command: "git",
+            arguments: ["status"],
+            workingDirectory: workDir
+        )
+        if result.success {
+            return result.output ?? ""
+        } else {
+            throw ToolError.commandFailed(result.error ?? "git status failed")
+        }
+    }
+
+    static func log(directory: String, limit: Int) async throws -> String {
+        let executor = ProcessExecutor()
+        let workDir = URL(fileURLWithPath: directory)
+        let result = try await executor.execute(
+            command: "git",
+            arguments: ["log", "--oneline", "-\(limit)"],
+            workingDirectory: workDir
+        )
+        if result.success {
+            return result.output ?? ""
+        } else {
+            throw ToolError.commandFailed(result.error ?? "git log failed")
+        }
+    }
+
+    static func diff(directory: String, staged: Bool) async throws -> String {
+        let executor = ProcessExecutor()
+        let workDir = URL(fileURLWithPath: directory)
+        var args = ["diff"]
+        if staged { args.append("--staged") }
+        let result = try await executor.execute(
+            command: "git",
+            arguments: args,
+            workingDirectory: workDir
+        )
+        if result.success {
+            let output = result.output ?? ""
+            return output.isEmpty ? "No changes" : output
+        } else {
+            throw ToolError.commandFailed(result.error ?? "git diff failed")
+        }
+    }
+
+    static func commit(directory: String, message: String) async throws -> String {
+        let executor = ProcessExecutor()
+        let workDir = URL(fileURLWithPath: directory)
+
+        // Stage all changes
+        let addResult = try await executor.execute(
+            command: "git",
+            arguments: ["add", "-A"],
+            workingDirectory: workDir
+        )
+        if !addResult.success {
+            throw ToolError.commandFailed(addResult.error ?? "git add failed")
+        }
+
+        // Commit
+        let commitResult = try await executor.execute(
+            command: "git",
+            arguments: ["commit", "-m", message],
+            workingDirectory: workDir
+        )
+        if commitResult.success {
+            return commitResult.output ?? "Committed successfully"
+        } else {
+            throw ToolError.commandFailed(commitResult.error ?? "git commit failed")
+        }
+    }
+
+    static func branch(directory: String, create: String?) async throws -> String {
+        let executor = ProcessExecutor()
+        let workDir = URL(fileURLWithPath: directory)
+        if let branchName = create {
+            let result = try await executor.execute(
+                command: "git",
+                arguments: ["checkout", "-b", branchName],
+                workingDirectory: workDir
+            )
+            if result.success {
+                return result.output ?? "Branch '\(branchName)' created and checked out"
+            } else {
+                throw ToolError.commandFailed(result.error ?? "git branch failed")
+            }
+        } else {
+            let result = try await executor.execute(
+                command: "git",
+                arguments: ["branch", "-a"],
+                workingDirectory: workDir
+            )
+            if result.success {
+                return result.output ?? ""
+            } else {
+                throw ToolError.commandFailed(result.error ?? "git branch failed")
+            }
+        }
+    }
+
+    static func clone(url: String, destination: String) async throws -> String {
+        let executor = ProcessExecutor()
+        let result = try await executor.execute(
+            command: "git",
+            arguments: ["clone", url, destination]
+        )
+        if result.success {
+            return result.output ?? "Cloned \(url) to \(destination)"
+        } else {
+            throw ToolError.commandFailed(result.error ?? "git clone failed")
+        }
+    }
+}
+
+// MARK: - Data Tools
+
+enum DataTools {
+    static func searchInFile(path: String, pattern: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ToolError.fileNotFound(path)
+        }
+        let executor = ProcessExecutor()
+        let result = try await executor.execute(
+            command: "grep",
+            arguments: ["-n", "-C", "2", pattern, path]
+        )
+        if result.success {
+            let output = result.output ?? ""
+            return output.isEmpty ? "No matches found for '\(pattern)' in \(path)" : output
+        } else {
+            // grep returns exit code 1 when no matches, which ProcessExecutor treats as failure
+            return "No matches found for '\(pattern)' in \(path)"
+        }
+    }
+
+    static func replaceInFile(path: String, search: String, replacement: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ToolError.fileNotFound(path)
+        }
+        let url = URL(fileURLWithPath: path)
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let count = content.components(separatedBy: search).count - 1
+        if count == 0 {
+            return "Pattern '\(search)' not found in \(path)"
+        }
+        let newContent = content.replacingOccurrences(of: search, with: replacement)
+        try newContent.write(to: url, atomically: true, encoding: .utf8)
+        return "Replaced \(count) occurrence(s) of '\(search)' with '\(replacement)' in \(path)"
+    }
+
+    static func calculate(expression: String) async throws -> String {
+        let executor = ProcessExecutor()
+        let code = "import math; print(\(expression))"
+        let result = try await executor.execute(
+            command: "python3",
+            arguments: ["-c", code]
+        )
+        if result.success {
+            return result.output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        } else {
+            throw ToolError.commandFailed(result.error ?? "Calculation failed")
+        }
+    }
+
+    static func parseJSON(input: String) async throws -> String {
+        guard let data = input.data(using: .utf8) else {
+            throw ToolError.commandFailed("Invalid input string")
+        }
+        let json = try JSONSerialization.jsonObject(with: data, options: [])
+        let prettyData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+        return String(data: prettyData, encoding: .utf8) ?? input
+    }
+
+    static func encodeBase64(input: String) async throws -> String {
+        guard let data = input.data(using: .utf8) else {
+            throw ToolError.commandFailed("Invalid input string")
+        }
+        return data.base64EncodedString()
+    }
+
+    static func decodeBase64(input: String) async throws -> String {
+        guard let data = Data(base64Encoded: input),
+              let decoded = String(data: data, encoding: .utf8) else {
+            throw ToolError.commandFailed("Invalid Base64 input")
+        }
+        return decoded
+    }
+
+    static func countLines(path: String) async throws -> String {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ToolError.fileNotFound(path)
+        }
+        let content = try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+        let count = content.components(separatedBy: "\n").count
+        return "\(count) lines in \(path)"
+    }
+}
+
+// MARK: - Clipboard Tools
+
+enum ClipboardTools {
+    @MainActor
+    static func read() async throws -> String {
+        let pb = NSPasteboard.general
+        return pb.string(forType: .string) ?? ""
+    }
+
+    @MainActor
+    static func write(content: String) async throws -> String {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(content, forType: .string)
+        return "Written to clipboard: \(content.prefix(100))\(content.count > 100 ? "..." : "")"
+    }
+}
+
+// MARK: - Media Tools
+
+enum MediaTools {
+    static func takeScreenshot(path: String) async throws -> String {
+        let destination: String
+        if path.isEmpty {
+            destination = (NSHomeDirectory() as NSString).appendingPathComponent("Desktop/screenshot.png")
+        } else {
+            destination = path
+        }
+        let executor = ProcessExecutor()
+        let result = try await executor.execute(
+            command: "/usr/sbin/screencapture",
+            arguments: ["-x", destination]
+        )
+        if result.success {
+            return "Screenshot saved to \(destination)"
+        } else {
+            throw ToolError.commandFailed(result.error ?? "screencapture failed")
+        }
+    }
+}
+
+// MARK: - Code Tools
+
+enum CodeTools {
+    static func runPython(code: String) async throws -> String {
+        let tmpFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lumi_\(UUID().uuidString).py")
+        try code.write(to: tmpFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmpFile) }
+
+        let executor = ProcessExecutor()
+        let result = try await executor.execute(
+            command: "python3",
+            arguments: [tmpFile.path]
+        )
+        if result.success {
+            return result.output ?? ""
+        } else {
+            throw ToolError.commandFailed(result.error ?? "Python execution failed")
+        }
+    }
+
+    static func runNode(code: String) async throws -> String {
+        let tmpFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lumi_\(UUID().uuidString).js")
+        try code.write(to: tmpFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmpFile) }
+
+        let executor = ProcessExecutor()
+        let result = try await executor.execute(
+            command: "node",
+            arguments: [tmpFile.path]
+        )
+        if result.success {
+            return result.output ?? ""
+        } else {
+            throw ToolError.commandFailed(result.error ?? "Node execution failed")
+        }
+    }
+}
+
+// MARK: - Memory Tools
+
+enum MemoryTools {
+    private static let prefix = "lumiagent.memory."
+
+    static func save(key: String, value: String) async throws -> String {
+        UserDefaults.standard.set(value, forKey: prefix + key)
+        return "Saved '\(key)'"
+    }
+
+    static func read(key: String) async throws -> String {
+        guard let value = UserDefaults.standard.string(forKey: prefix + key) else {
+            return "Key '\(key)' not found in memory"
+        }
+        return value
+    }
+
+    static func list() async throws -> String {
+        let allKeys = UserDefaults.standard.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
+            .sorted()
+        if allKeys.isEmpty {
+            return "No keys stored in memory"
+        }
+        return allKeys.joined(separator: "\n")
+    }
+
+    static func delete(key: String) async throws -> String {
+        let fullKey = prefix + key
+        guard UserDefaults.standard.object(forKey: fullKey) != nil else {
+            return "Key '\(key)' not found in memory"
+        }
+        UserDefaults.standard.removeObject(forKey: fullKey)
+        return "Deleted '\(key)' from memory"
+    }
+}
+
+// MARK: - Tool Error Extension
+
+extension ToolError {
+    static func invalidURL(_ url: String) -> ToolError {
+        .commandFailed("Invalid URL: \(url)")
+    }
+}

@@ -24,9 +24,6 @@ let package = Package(
         // GRDB - SQLite database
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.0.0"),
 
-        // KeychainAccess - Secure credential storage
-        .package(url: "https://github.com/kishikawakatsumi/KeychainAccess.git", from: "4.2.0"),
-
         // swift-log - Structured logging
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0")
     ],
@@ -37,7 +34,6 @@ let package = Package(
                 .product(name: "SwiftAnthropic", package: "SwiftAnthropic"),
                 .product(name: "OpenAI", package: "OpenAI"),
                 .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "KeychainAccess", package: "KeychainAccess"),
                 .product(name: "Logging", package: "swift-log")
             ],
             path: "LumiAgent",

@@ -2,136 +2,227 @@
 //  SettingsView.swift
 //  LumiAgent
 //
-//  Created by Lumi Agent on 2026-02-18.
-//
 
 import SwiftUI
 
-struct SettingsView: View {
-    @State private var openAIKey: String = ""
-    @State private var anthropicKey: String = ""
-    @State private var ollamaURL: String = "http://localhost:11434"
-    @FocusState private var focusedField: Field?
+// MARK: - Settings View
 
-    enum Field {
-        case openAI
-        case anthropic
-        case ollama
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            APIKeysTab()
+                .tabItem { Label("API Keys", systemImage: "key.fill") }
+
+            SecurityTab()
+                .tabItem { Label("Security", systemImage: "shield.fill") }
+
+            AboutTab()
+                .tabItem { Label("About", systemImage: "info.circle.fill") }
+        }
+        .frame(width: 560, height: 460)
+    }
+}
+
+// MARK: - API Keys Tab
+
+private struct APIKeysTab: View {
+    @AppStorage("settings.ollamaURL") private var ollamaURL = AppConfig.defaultOllamaURL
+
+    // Input fields
+    @State private var openAIKey = ""
+    @State private var anthropicKey = ""
+    @State private var geminiKey = ""
+
+    // Saved-flash state
+    @State private var savedProvider: AIProvider? = nil
+
+    // Whether a key already exists in keychain
+    @State private var hasKey: [AIProvider: Bool] = [:]
+
+    var body: some View {
+        Form {
+            apiKeySection(
+                provider: .openai,
+                icon: "brain", color: .green,
+                title: "OpenAI",
+                placeholder: "sk-…",
+                key: $openAIKey
+            )
+
+            apiKeySection(
+                provider: .anthropic,
+                icon: "sparkles", color: .purple,
+                title: "Anthropic",
+                placeholder: "sk-ant-…",
+                key: $anthropicKey
+            )
+
+            apiKeySection(
+                provider: .gemini,
+                icon: "atom", color: .blue,
+                title: "Gemini (Google AI)",
+                placeholder: "AIza…",
+                key: $geminiKey
+            )
+
+            // Ollama — URL only, no key
+            Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "server.rack")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ollama")
+                            .font(.headline)
+                        Text("Local server — no API key required")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                LabeledContent("Server URL") {
+                    TextField("http://localhost:11434", text: $ollamaURL)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 240)
+                }
+
+                Button("Reset to Default") {
+                    ollamaURL = AppConfig.defaultOllamaURL
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { loadKeyStatus() }
+    }
+
+    @ViewBuilder
+    private func apiKeySection(
+        provider: AIProvider,
+        icon: String, color: Color,
+        title: String,
+        placeholder: String,
+        key: Binding<String>
+    ) -> some View {
+        let stored = hasKey[provider] == true
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.title2)
+                    .foregroundStyle(color)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(stored ? "API key saved" : "No key stored")
+                        .font(.caption)
+                        .foregroundStyle(stored ? .green : .secondary)
+                }
+                Spacer()
+                if savedProvider == provider {
+                    Label("Saved", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.callout)
+                        .transition(.opacity)
+                }
+            }
+
+            SecureField(stored ? "Enter new key to replace…" : placeholder, text: key)
+
+            Button("Save \(title) Key") {
+                save(key.wrappedValue, for: provider)
+                key.wrappedValue = ""
+                hasKey[provider] = true
+                savedProvider = provider
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    if savedProvider == provider { savedProvider = nil }
+                }
+            }
+            .disabled(key.wrappedValue.isEmpty)
+        }
+    }
+
+    private func loadKeyStatus() {
+        let repo = AIProviderRepository()
+        for provider in [AIProvider.openai, .anthropic, .gemini] {
+            hasKey[provider] = (try? repo.getAPIKey(for: provider)).flatMap { $0.isEmpty ? nil : $0 } != nil
+        }
+    }
+
+    private func save(_ key: String, for provider: AIProvider) {
+        let repo = AIProviderRepository()
+        try? repo.setAPIKey(key, for: provider)
+    }
+}
+
+// MARK: - Security Tab
+
+private struct SecurityTab: View {
+    @AppStorage("settings.allowSudo") private var allowSudo = false
+    @AppStorage("settings.requireApproval") private var requireApproval = true
+    @AppStorage("settings.autoApproveThreshold") private var thresholdRaw = RiskLevel.low.rawValue
+    @AppStorage("settings.enableAuditLogs") private var enableAuditLogs = true
+
+    private var autoApproveThreshold: Binding<RiskLevel> {
+        Binding(
+            get: { RiskLevel(rawValue: thresholdRaw) ?? .low },
+            set: { thresholdRaw = $0.rawValue }
+        )
     }
 
     var body: some View {
-        TabView {
-            // API Keys
-            Form {
-                Section("OpenAI") {
-                    SecureField("API Key", text: $openAIKey)
-                        .focused($focusedField, equals: .openAI)
-                        .textFieldStyle(.roundedBorder)
+        Form {
+            Section("Default Security Policy") {
+                Toggle("Allow Sudo Commands", isOn: $allowSudo)
+                    .tint(.orange)
 
-                    Button("Save OpenAI Key") {
-                        saveAPIKey(openAIKey, for: .openai)
-                        openAIKey = ""
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(openAIKey.isEmpty)
+                if allowSudo {
+                    Label("Sudo access enables privileged operations. Use with caution.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
-                Section("Anthropic") {
-                    SecureField("API Key", text: $anthropicKey)
-                        .focused($focusedField, equals: .anthropic)
-                        .textFieldStyle(.roundedBorder)
+                Toggle("Require Approval for Risky Actions", isOn: $requireApproval)
 
-                    Button("Save Anthropic Key") {
-                        saveAPIKey(anthropicKey, for: .anthropic)
-                        anthropicKey = ""
+                Picker("Auto-Approve Threshold", selection: autoApproveThreshold) {
+                    ForEach([RiskLevel.low, .medium, .high, .critical], id: \.self) { level in
+                        Text(level.displayName).tag(level)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(anthropicKey.isEmpty)
                 }
 
-                Section("Ollama") {
-                    TextField("Server URL", text: $ollamaURL)
-                        .focused($focusedField, equals: .ollama)
-                        .textFieldStyle(.roundedBorder)
+                Text("Actions at or below this risk level will be approved automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-                    Text("Default: http://localhost:11434")
+            Section("Audit Logging") {
+                Toggle("Enable Audit Logs", isOn: $enableAuditLogs)
+
+                Button("Export Audit Logs…") {
+                    exportAuditLogs()
+                }
+                .disabled(!enableAuditLogs)
+            }
+
+            Section("Blocked Commands") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("These commands are always blocked regardless of agent settings:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem {
-                Label("API Keys", systemImage: "key.fill")
-            }
 
-            // Security
-            Form {
-                Section("Default Security Policy") {
-                    Toggle("Allow Sudo Commands", isOn: .constant(false))
-                    Toggle("Require Approval for Risky Operations", isOn: .constant(true))
-
-                    Picker("Auto-Approve Threshold", selection: .constant(RiskLevel.low)) {
-                        ForEach([RiskLevel.low, .medium, .high, .critical], id: \.self) { level in
-                            Text(level.displayName).tag(level)
-                        }
-                    }
-                }
-
-                Section("Audit Logging") {
-                    Toggle("Enable Audit Logs", isOn: .constant(true))
-                    Button("Export Audit Logs") {
-                        exportAuditLogs()
+                    ForEach(AppConfig.defaultSecurityPolicy.blacklistedCommands, id: \.self) { cmd in
+                        Text(cmd)
+                            .font(.caption.monospaced())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.red.opacity(0.08))
+                            .foregroundStyle(.red)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
             }
-            .formStyle(.grouped)
-            .tabItem {
-                Label("Security", systemImage: "shield.fill")
-            }
-
-            // About
-            VStack(spacing: 16) {
-                Image(systemName: "cpu")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.blue)
-
-                Text("Lumi Agent")
-                    .font(.title)
-
-                Text("Version 1.0.0")
-                    .foregroundStyle(.secondary)
-
-                Text("AI-powered agentic platform for macOS")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-
-                Divider()
-                    .padding(.vertical)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    InfoRow(label: "OpenAI Support", value: "✓")
-                    InfoRow(label: "Anthropic Support", value: "✓")
-                    InfoRow(label: "Ollama Support", value: "✓")
-                    InfoRow(label: "Audit Logging", value: "✓")
-                    InfoRow(label: "Security Policies", value: "✓")
-                }
-            }
-            .padding()
-            .tabItem {
-                Label("About", systemImage: "info.circle.fill")
-            }
         }
-        .frame(width: 600, height: 500)
-    }
-
-    private func saveAPIKey(_ key: String, for provider: AIProvider) {
-        let repo = AIProviderRepository()
-        do {
-            try repo.setAPIKey(key, for: provider)
-            print("✅ API key saved for \(provider.rawValue)")
-        } catch {
-            print("❌ Failed to save API key: \(error)")
-        }
+        .formStyle(.grouped)
     }
 
     private func exportAuditLogs() {
@@ -139,11 +230,101 @@ struct SettingsView: View {
             let logger = AuditLogger.shared
             let query = AuditQuery()
             if let url = try? await logger.export(query) {
-                print("Exported to: \(url)")
+                NSWorkspace.shared.open(url)
             }
         }
     }
 }
+
+// MARK: - About Tab
+
+private struct AboutTab: View {
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // App icon + name
+                VStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [.blue, .purple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 80, height: 80)
+
+                        Image(systemName: "cpu")
+                            .font(.system(size: 40, weight: .light))
+                            .foregroundColor(.white)
+                    }
+
+                    VStack(spacing: 4) {
+                        Text("Lumi Agent")
+                            .font(.title)
+                            .fontWeight(.semibold)
+                        Text("Version \(AppConfig.version) (\(AppConfig.buildNumber))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Text("AI-powered agentic platform for macOS.\nChat with agents, build groups, automate tasks.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+
+                Divider()
+
+                // Feature grid
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    FeatureCell(icon: "brain", color: .green, title: "OpenAI", detail: "GPT-4o & more")
+                    FeatureCell(icon: "sparkles", color: .purple, title: "Anthropic", detail: "Claude models")
+                    FeatureCell(icon: "atom", color: .blue, title: "Gemini", detail: "Google AI models")
+                    FeatureCell(icon: "server.rack", color: .orange, title: "Ollama", detail: "Run locally")
+                    FeatureCell(icon: "bubble.left.and.bubble.right.fill", color: .teal, title: "Agent Space", detail: "Chat & groups")
+                    FeatureCell(icon: "shield.fill", color: .indigo, title: "Security", detail: "Approval flows")
+                }
+
+                Divider()
+
+                Text("Built with SwiftUI · macOS 14+")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(28)
+        }
+    }
+}
+
+private struct FeatureCell: View {
+    let icon: String
+    let color: Color
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(color)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout).fontWeight(.medium)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+// MARK: - Info Row (kept for compatibility)
 
 struct InfoRow: View {
     let label: String
@@ -151,11 +332,9 @@ struct InfoRow: View {
 
     var body: some View {
         HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
+            Text(label).foregroundStyle(.secondary)
             Spacer()
-            Text(value)
-                .fontWeight(.medium)
+            Text(value).fontWeight(.medium)
         }
     }
 }

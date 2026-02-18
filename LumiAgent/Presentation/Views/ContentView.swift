@@ -25,6 +25,8 @@ struct ContentView: View {
                 switch appState.selectedSidebarItem {
                 case .agents:
                     AgentListView()
+                case .agentSpace:
+                    AgentSpaceView()
                 case .history:
                     Text("History - Coming Soon")
                 case .queue:

@@ -80,7 +80,7 @@ final class AgentExecutionEngine: ObservableObject {
             ]
 
             // Get available tools
-            let tools = toolRegistry.getToolsForAI()
+            let tools = toolRegistry.getToolsForAI(enabledNames: agent.configuration.enabledTools)
 
             // Execute agent loop
             try await executionLoop(
@@ -139,30 +139,30 @@ final class AgentExecutionEngine: ObservableObject {
                 maxTokens: agent.configuration.maxTokens
             )
 
-            // Add AI response to messages
-            if let content = response.content {
-                messages.append(AIMessage(role: .assistant, content: content))
-                await addStep(.response, content: content)
+            // Always record the full assistant turn (may include tool calls)
+            messages.append(AIMessage(
+                role: .assistant,
+                content: response.content ?? "",
+                toolCalls: response.toolCalls
+            ))
 
-                // If no tool calls, we're done
-                if response.toolCalls == nil || response.toolCalls!.isEmpty {
-                    break
-                }
+            if let content = response.content, !content.isEmpty {
+                await addStep(.response, content: content)
             }
 
-            // Process tool calls
-            if let toolCalls = response.toolCalls {
-                for toolCall in toolCalls {
-                    try await processToolCall(
-                        toolCall,
-                        agent: agent,
-                        session: session,
-                        messages: &messages
-                    )
-                }
-            } else {
-                // No tool calls and we got a response - done
+            // If no tool calls we're done
+            guard let toolCalls = response.toolCalls, !toolCalls.isEmpty else {
                 break
+            }
+
+            // Process each tool call and append results to history
+            for toolCall in toolCalls {
+                try await processToolCall(
+                    toolCall,
+                    agent: agent,
+                    session: session,
+                    messages: &messages
+                )
             }
         }
 

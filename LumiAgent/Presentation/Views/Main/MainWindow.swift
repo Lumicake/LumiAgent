@@ -34,18 +34,7 @@ struct MainWindow: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    appState.showingNewAgent = true
-                } label: {
-                    Label("New Agent", systemImage: "plus")
-                }
-                .help("Create a new agent")
-
-                Divider()
-
-                Button {
-                    Task {
-                        await executeCurrentAgent()
-                    }
+                    Task { await executeCurrentAgent() }
                 } label: {
                     Label("Execute", systemImage: "play.fill")
                 }
@@ -53,9 +42,7 @@ struct MainWindow: View {
                 .help("Execute selected agent")
 
                 Button {
-                    Task {
-                        await executionEngine.stop()
-                    }
+                    Task { await executionEngine.stop() }
                 } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
@@ -128,6 +115,8 @@ struct ContentListView: View {
             switch appState.selectedSidebarItem {
             case .agents:
                 AgentListView()
+            case .agentSpace:
+                AgentSpaceView()
             case .history:
                 ExecutionHistoryView()
             case .queue:
@@ -156,6 +145,12 @@ struct DetailView: View {
                     AgentDetailView(agent: agent)
                 } else {
                     EmptyDetailView(message: "Select an agent")
+                }
+            case .agentSpace:
+                if let convId = appState.selectedConversationId {
+                    ChatView(conversationId: convId)
+                } else {
+                    EmptyDetailView(message: "Select or start a conversation")
                 }
             case .history:
                 if executionEngine.currentSession != nil {
@@ -280,13 +275,12 @@ struct NewAgentView: View {
 
     @State private var name: String = ""
     @State private var provider: AIProvider = .ollama
-    @State private var model: String = "llama3"
+    @State private var model: String = AppConfig.defaultModels[.ollama] ?? "llama3.2:latest"
+    @State private var availableModels: [String] = AIProvider.ollama.defaultModels
+    @State private var loadingModels = false
     @FocusState private var focusedField: Field?
 
-    enum Field {
-        case name
-        case model
-    }
+    enum Field { case name }
 
     var body: some View {
         Form {
@@ -295,26 +289,35 @@ struct NewAgentView: View {
                     .focused($focusedField, equals: .name)
 
                 Picker("Provider", selection: $provider) {
-                    ForEach(AIProvider.allCases, id: \.self) { provider in
-                        Text(provider.rawValue).tag(provider)
+                    ForEach(AIProvider.allCases, id: \.self) { p in
+                        Text(p.rawValue).tag(p)
                     }
                 }
                 .onChange(of: provider) {
-                    // Update default model when provider changes
-                    model = AppConfig.defaultModels[provider] ?? "default"
+                    model = AppConfig.defaultModels[provider] ?? ""
+                    fetchModels()
                 }
 
-                TextField("Model", text: $model)
-                    .focused($focusedField, equals: .model)
+                HStack(spacing: 8) {
+                    if availableModels.isEmpty {
+                        TextField("Model", text: $model)
+                    } else {
+                        Picker("Model", selection: $model) {
+                            ForEach(availableModels, id: \.self) { m in
+                                Text(m).tag(m)
+                            }
+                        }
+                    }
+                    if loadingModels {
+                        ProgressView().scaleEffect(0.7)
+                    }
+                }
             }
 
             HStack {
                 Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.escape)
-
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.escape)
                 Button("Create") {
                     createAgent()
                     dismiss()
@@ -326,10 +329,26 @@ struct NewAgentView: View {
             .padding()
         }
         .padding()
-        .frame(width: 500, height: 300)
+        .frame(width: 500, height: 280)
         .onAppear {
-            // Auto-focus name field
             focusedField = .name
+            fetchModels()
+        }
+    }
+
+    private func fetchModels() {
+        availableModels = provider.defaultModels
+        guard provider == .ollama else { return }
+        loadingModels = true
+        Task {
+            let repo = AIProviderRepository()
+            if let live = try? await repo.getAvailableModels(provider: .ollama), !live.isEmpty {
+                await MainActor.run {
+                    availableModels = live
+                    if !live.contains(model) { model = live.first ?? model }
+                }
+            }
+            await MainActor.run { loadingModels = false }
         }
     }
 

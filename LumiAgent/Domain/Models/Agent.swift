@@ -6,11 +6,12 @@
 //
 
 import Foundation
+import SwiftUI
 
 // MARK: - Agent
 
 /// Represents an AI agent with configuration and capabilities
-struct Agent: Identifiable, Codable {
+struct Agent: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
     var configuration: AgentConfiguration
@@ -38,10 +39,21 @@ struct Agent: Identifiable, Codable {
     }
 }
 
+extension Agent {
+    /// Deterministic avatar color derived from the agent's ID.
+    var avatarColor: Color {
+        let palette: [Color] = [
+            .blue, .purple, .pink, .orange, .green, .teal, .indigo, .red
+        ]
+        let hash = abs(id.hashValue)
+        return palette[hash % palette.count]
+    }
+}
+
 // MARK: - Agent Configuration
 
 /// Configuration for an AI agent
-struct AgentConfiguration: Codable {
+struct AgentConfiguration: Codable, Equatable {
     var provider: AIProvider
     var model: String
     var systemPrompt: String?
@@ -75,16 +87,19 @@ struct AgentConfiguration: Codable {
 enum AIProvider: String, Codable, CaseIterable {
     case openai = "OpenAI"
     case anthropic = "Anthropic"
+    case gemini = "Gemini"
     case ollama = "Ollama"
 
     var defaultModels: [String] {
         switch self {
         case .openai:
-            return ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"]
+            return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
         case .anthropic:
-            return ["claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-20250514"]
+            return ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+        case .gemini:
+            return ["gemini-2.0-flash", "gemini-2.5-pro-preview-06-05", "gemini-1.5-pro", "gemini-1.5-flash"]
         case .ollama:
-            return ["llama3", "mixtral", "codellama", "mistral"]
+            return ["llama3.2:latest", "mistral:latest", "qwen3:4b", "gemma3:4b", "deepseek-r1:1.5b"]
         }
     }
 }
@@ -139,7 +154,7 @@ enum AgentStatus: String, Codable {
 // MARK: - Security Policy
 
 /// Security policy for agent operations
-struct SecurityPolicy: Codable {
+struct SecurityPolicy: Codable, Equatable {
     var allowSudo: Bool
     var requireApproval: Bool
     var whitelistedCommands: [String]

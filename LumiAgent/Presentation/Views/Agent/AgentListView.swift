@@ -16,6 +16,14 @@ struct AgentListView: View {
                 .tag(agent.id)
         }
         .navigationTitle("Agents")
+        .toolbar {
+            Button {
+                appState.showingNewAgent = true
+            } label: {
+                Image(systemName: "plus")
+            }
+            .help("Create a new agent")
+        }
         .overlay {
             if appState.agents.isEmpty {
                 VStack(spacing: 16) {
@@ -60,9 +68,10 @@ struct AgentRowView: View {
 
     private var providerIcon: String {
         switch agent.configuration.provider {
-        case .openai: return "brain"
+        case .openai:    return "brain"
         case .anthropic: return "sparkles"
-        case .ollama: return "server.rack"
+        case .gemini:    return "atom"
+        case .ollama:    return "server.rack"
         }
     }
 }
