@@ -23,12 +23,22 @@ struct AIMessage {
     let content: String
     let toolCallId: String?
     let toolCalls: [ToolCall]?
+    /// JPEG image data to attach as a vision input alongside `content`.
+    /// Only valid on `.user` role messages. Supported by OpenAI, Anthropic, Gemini.
+    let imageData: Data?
 
-    init(role: Role, content: String, toolCallId: String? = nil, toolCalls: [ToolCall]? = nil) {
+    init(
+        role: Role,
+        content: String,
+        toolCallId: String? = nil,
+        toolCalls: [ToolCall]? = nil,
+        imageData: Data? = nil
+    ) {
         self.role = role
         self.content = content
         self.toolCallId = toolCallId
         self.toolCalls = toolCalls
+        self.imageData = imageData
     }
 }
 

@@ -37,13 +37,89 @@ struct LumiAgentApp: App {
                 .frame(minWidth: 1000, minHeight: 600)
         }
         .commands {
-            LumiAgentCommands(selectedSidebarItem: $appState.selectedSidebarItem)
+            LumiAgentCommands(
+                selectedSidebarItem: $appState.selectedSidebarItem,
+                appState: appState
+            )
         }
 
         Settings {
             SettingsView()
                 .environmentObject(appState)
         }
+    }
+}
+
+// MARK: - Screen Capture Helper
+
+/// Captures the full screen and returns JPEG data scaled to maxWidth pixels wide.
+/// Runs synchronously — call from a background thread / Task.detached.
+private func captureScreenForVision(maxWidth: CGFloat = 1440) -> Data? {
+    let tmpURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lumi_vision_\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    proc.arguments = ["-x", tmpURL.path]   // -x = no shutter sound
+    guard (try? proc.run()) != nil else { return nil }
+    proc.waitUntilExit()
+    guard proc.terminationStatus == 0 else { return nil }
+
+    // Load via CGImageSource (thread-safe)
+    guard let src = CGImageSourceCreateWithURL(tmpURL as CFURL, nil),
+          let cg = CGImageSourceCreateImageAtIndex(src, 0, nil)
+    else { return nil }
+
+    // Scale down preserving aspect ratio
+    let origW = CGFloat(cg.width), origH = CGFloat(cg.height)
+    let scale = min(1.0, maxWidth / origW)
+    let tw = Int(origW * scale), th = Int(origH * scale)
+
+    let cs = CGColorSpaceCreateDeviceRGB()
+    guard let ctx = CGContext(
+        data: nil, width: tw, height: th,
+        bitsPerComponent: 8, bytesPerRow: 0, space: cs,
+        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+    ) else { return nil }
+    ctx.interpolationQuality = .high
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: tw, height: th))
+    guard let scaled = ctx.makeImage() else { return nil }
+
+    let rep = NSBitmapImageRep(cgImage: scaled)
+    return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+}
+
+/// Tool names that visually change the screen — a screenshot is worthwhile after these.
+private let screenControlToolNames: Set<String> = [
+    "open_application", "click_mouse", "scroll_mouse",
+    "type_text", "press_key", "run_applescript", "take_screenshot"
+]
+
+// MARK: - App State
+
+// MARK: - Tool Call Record
+
+struct ToolCallRecord: Identifiable {
+    let id: UUID
+    let agentId: UUID
+    let agentName: String
+    let toolName: String
+    let arguments: [String: String]
+    let result: String
+    let timestamp: Date
+    let success: Bool
+
+    init(agentId: UUID, agentName: String, toolName: String,
+         arguments: [String: String], result: String, success: Bool) {
+        self.id = UUID()
+        self.agentId = agentId
+        self.agentName = agentName
+        self.toolName = toolName
+        self.arguments = arguments
+        self.result = result
+        self.timestamp = Date()
+        self.success = success
     }
 }
 
@@ -63,12 +139,78 @@ class AppState: ObservableObject {
     }
     @Published var selectedConversationId: UUID?
 
+    // MARK: - Tool Call History
+    @Published var toolCallHistory: [ToolCallRecord] = []
+    @Published var selectedHistoryAgentId: UUID?
+
+    // MARK: - Screen Control State
+    /// True while the agent is actively running tools in Agent Mode.
+    @Published var isAgentControllingScreen = false
+    /// Counts concurrent screen-control agents so the flag clears only when all finish.
+    private var screenControlCount = 0
+    /// Stored Task handles so we can cancel them from the Stop button.
+    private var screenControlTasks: [Task<Void, Never>] = []
+
     private let conversationsKey = "lumiagent.conversations"
 
     init() {
         _ = DatabaseManager.shared
         loadAgents()
         loadConversations()
+        // Register ⌘L global hotkey after init completes
+        DispatchQueue.main.async { [weak self] in
+            self?.setupGlobalHotkey()
+        }
+    }
+
+    // MARK: - Global Hotkey
+
+    private func setupGlobalHotkey() {
+        // Use Carbon RegisterEventHotKey so the shortcut is truly intercepted
+        // globally — it never reaches the frontmost app.
+        // Default: ⌥⌘L (Option + Command + L). Override by calling
+        // GlobalHotkeyManager.shared.register(keyCode:modifiers:) in AppDelegate.
+        GlobalHotkeyManager.shared.onActivate = { [weak self] in
+            self?.toggleCommandPalette()
+        }
+        GlobalHotkeyManager.shared.register()
+    }
+
+    func toggleCommandPalette() {
+        CommandPaletteController.shared.toggle(agents: agents) { [weak self] text, agentId in
+            self?.sendCommandPaletteMessage(text: text, agentId: agentId)
+        }
+    }
+
+    /// Routes a command-palette submission into the normal agent-mode send path.
+    func sendCommandPaletteMessage(text: String, agentId: UUID?) {
+        let targetId = agentId ?? agents.first?.id
+        guard let targetId, agents.contains(where: { $0.id == targetId }) else { return }
+
+        // Find or create a DM with the target agent, then send in agent mode
+        let conv = createDM(agentId: targetId)
+        sendMessage(text, in: conv.id, agentMode: true)
+
+        // Bring our window to front so the user sees the response
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func recordToolCall(agentId: UUID, agentName: String, toolName: String,
+                        arguments: [String: String], result: String) {
+        let success = !result.hasPrefix("Error:") && !result.hasPrefix("Tool not found:")
+        toolCallHistory.insert(
+            ToolCallRecord(agentId: agentId, agentName: agentName, toolName: toolName,
+                           arguments: arguments, result: result, success: success),
+            at: 0
+        )
+    }
+
+    /// Called by the Stop button on the floating overlay.
+    func stopAgentControl() {
+        screenControlTasks.forEach { $0.cancel() }
+        screenControlTasks.removeAll()
+        screenControlCount = 0
+        isAgentControllingScreen = false
     }
 
     // MARK: - Agent persistence
@@ -194,14 +336,33 @@ class AppState: ObservableObject {
 
         for agent in targets {
             let history = conv.messages.filter { !$0.isStreaming }
-            Task {
+            let task = Task {
                 await streamResponse(from: agent, in: conversationId, history: history, agentMode: agentMode)
+            }
+            if agentMode {
+                screenControlTasks.append(task)
             }
         }
     }
 
     private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false) async {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
+
+        // Raise/lower the screen-control flag around the entire response
+        if agentMode {
+            screenControlCount += 1
+            isAgentControllingScreen = true
+        }
+        defer {
+            if agentMode {
+                screenControlCount = max(0, screenControlCount - 1)
+                if screenControlCount == 0 {
+                    isAgentControllingScreen = false
+                    // Clean up any finished tasks from the list
+                    screenControlTasks.removeAll { $0.isCancelled }
+                }
+            }
+        }
 
         let placeholderId = UUID()
         conversations[index].messages.append(SpaceMessage(
@@ -257,12 +418,54 @@ class AppState: ObservableObject {
             var parts: [String] = []
             if agentMode {
                 parts.append("""
-                You are in Agent Mode with direct control over the user's screen on macOS. \
-                You can move the mouse, click, type text, press keys, scroll, run AppleScript, and take screenshots. \
-                Screen coordinates use a top-left origin: (0, 0) is the top-left corner. \
-                Always call get_screen_info first, then take_screenshot to understand what's on screen before taking action. \
-                Work step by step and describe what you're doing as you go. \
-                Use run_applescript for complex UI interactions — it supports System Events accessibility APIs.
+                You are in Agent Mode with FULL autonomous control of the user's macOS screen.
+
+                CRITICAL RULES — follow these without exception:
+                1. NEVER tell the user to "manually" do anything. You must complete every step yourself using your tools.
+                2. When a task involves opening an app and then doing something inside it (searching, clicking, navigating), you MUST do the entire task end-to-end.
+                3. Prefer run_applescript for in-app interactions — it is more reliable than raw mouse clicks because it uses System Events accessibility APIs to find UI elements by type/name regardless of screen position.
+
+                STANDARD WORKFLOW FOR ANY APP TASK:
+                  a) open_application to launch the app (or bring it to front).
+                  b) Use run_applescript to interact with the app's UI elements directly.
+                  c) If AppleScript UI scripting fails or the app is not scriptable, call take_screenshot to see what is on screen, then use click_mouse / type_text on the correct coordinates.
+                  d) Verify the result with take_screenshot and repeat step (b/c) if needed.
+
+                APPLESCRIPT UI SCRIPTING PATTERNS (use these inside run_applescript):
+                  • Activate an app and interact with its window:
+                      tell application "AppName" to activate
+                      delay 0.8
+                      tell application "System Events"
+                          tell process "AppName"
+                              set value of text field 1 of window 1 to "search text"
+                              key code 36  -- Return/Enter
+                          end tell
+                      end tell
+                  • Click a named button:
+                      tell application "System Events"
+                          tell process "AppName"
+                              click button "Search" of window 1
+                          end tell
+                      end tell
+                  • Select a menu item:
+                      tell application "System Events"
+                          tell process "AppName"
+                              click menu item "Preferences…" of menu "AppName" of menu bar 1
+                          end tell
+                      end tell
+                  • Use keyboard shortcut Cmd+F to open search in most apps:
+                      tell application "System Events"
+                          tell process "AppName"
+                              keystroke "f" using {command down}
+                              delay 0.3
+                              keystroke "search text"
+                              key code 36
+                          end tell
+                      end tell
+
+                Screen coordinates use a top-left origin: (0, 0) is the top-left corner.
+                Always call get_screen_info first to confirm screen dimensions.
+                Describe each step as you execute it.
                 """)
             }
             if isGroup {
@@ -306,6 +509,13 @@ class AppState: ObservableObject {
                 var finalContent = ""
                 while iteration < 10 {
                     iteration += 1
+
+                    // Respect cancellation (Stop button)
+                    if Task.isCancelled {
+                        updatePlaceholder(finalContent.isEmpty ? "Stopped." : finalContent)
+                        break
+                    }
+
                     let response = try await repo.sendMessage(
                         provider: agent.configuration.provider,
                         model: agent.configuration.model,
@@ -333,7 +543,12 @@ class AppState: ObservableObject {
                     let names = toolCalls.map { $0.name }.joined(separator: ", ")
                     updatePlaceholder("Running: \(names)…")
 
+                    // Track whether this batch touched the screen
+                    var touchedScreen = false
+
                     for toolCall in toolCalls {
+                        if Task.isCancelled { break }
+
                         let result: String
                         if toolCall.name == "update_self" {
                             result = applySelfUpdate(toolCall.arguments, agentId: agent.id)
@@ -343,7 +558,42 @@ class AppState: ObservableObject {
                         } else {
                             result = "Tool not found: \(toolCall.name)"
                         }
+                        recordToolCall(agentId: agent.id, agentName: agent.name,
+                                       toolName: toolCall.name, arguments: toolCall.arguments,
+                                       result: result)
                         aiMessages.append(AIMessage(role: .tool, content: result, toolCallId: toolCall.id))
+
+                        if screenControlToolNames.contains(toolCall.name) { touchedScreen = true }
+                    }
+
+                    // ── Vision feedback loop ──────────────────────────────
+                    // After any batch that changed the screen, capture a
+                    // screenshot and inject it as the next user vision message
+                    // so the AI can see exactly what's on screen and decide
+                    // the next action precisely.
+                    if agentMode && touchedScreen && !Task.isCancelled {
+                        updatePlaceholder((finalContent.isEmpty ? "" : finalContent + "\n\n") +
+                                          "📸 Capturing screen to see current state…")
+
+                        // Give the UI time to settle before capturing
+                        try? await Task.sleep(nanoseconds: 900_000_000) // 0.9 s
+
+                        // Capture off the main actor so Process doesn't block the run loop
+                        let screenshotData = await Task.detached(priority: .userInitiated) {
+                            captureScreenForVision(maxWidth: 1440)
+                        }.value
+
+                        if let data = screenshotData {
+                            aiMessages.append(AIMessage(
+                                role: .user,
+                                content: "Here is the current screen state after your last actions. " +
+                                         "Look at the screenshot carefully: identify every visible UI element, " +
+                                         "button, text field, and icon with its approximate screen position. " +
+                                         "Then continue the task — decide what to click, type, or do next, " +
+                                         "and call the appropriate tool(s).",
+                                imageData: data
+                            ))
+                        }
                     }
                 }
                 if finalContent.isEmpty { updatePlaceholder("(no response)") }

@@ -106,7 +106,21 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
             case .system:
                 break
             case .user:
-                result.append(["role": "user", "content": msg.content])
+                if let imgData = msg.imageData {
+                    // Vision message: content is an array of text + image_url blocks
+                    var parts: [[String: Any]] = []
+                    if !msg.content.isEmpty {
+                        parts.append(["type": "text", "text": msg.content])
+                    }
+                    let b64 = imgData.base64EncodedString()
+                    parts.append([
+                        "type": "image_url",
+                        "image_url": ["url": "data:image/jpeg;base64,\(b64)", "detail": "high"]
+                    ])
+                    result.append(["role": "user", "content": parts])
+                } else {
+                    result.append(["role": "user", "content": msg.content])
+                }
             case .assistant:
                 if let tcs = msg.toolCalls, !tcs.isEmpty {
                     var m: [String: Any] = ["role": "assistant"]
@@ -140,7 +154,20 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
             case .system:
                 i += 1
             case .user:
-                result.append(["role": "user", "content": msg.content])
+                if let imgData = msg.imageData {
+                    // Vision message: content array with image block + text block
+                    let b64 = imgData.base64EncodedString()
+                    var parts: [[String: Any]] = [
+                        ["type": "image",
+                         "source": ["type": "base64", "media_type": "image/jpeg", "data": b64]]
+                    ]
+                    if !msg.content.isEmpty {
+                        parts.append(["type": "text", "text": msg.content])
+                    }
+                    result.append(["role": "user", "content": parts])
+                } else {
+                    result.append(["role": "user", "content": msg.content])
+                }
                 i += 1
             case .assistant:
                 if let tcs = msg.toolCalls, !tcs.isEmpty {
@@ -180,7 +207,18 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
             switch msg.role {
             case .system: continue
             case .user:
-                result.append(["role": "user", "parts": [["text": msg.content]]])
+                if let imgData = msg.imageData {
+                    // Vision message: text part + inlineData part
+                    var parts: [[String: Any]] = []
+                    if !msg.content.isEmpty {
+                        parts.append(["text": msg.content])
+                    }
+                    let b64 = imgData.base64EncodedString()
+                    parts.append(["inlineData": ["mimeType": "image/jpeg", "data": b64]])
+                    result.append(["role": "user", "parts": parts])
+                } else {
+                    result.append(["role": "user", "parts": [["text": msg.content]]])
+                }
             case .assistant:
                 if let tcs = msg.toolCalls, !tcs.isEmpty {
                     var parts: [[String: Any]] = []

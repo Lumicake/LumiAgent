@@ -13,8 +13,17 @@ import SwiftUI
 
 struct LumiAgentCommands: Commands {
     @Binding var selectedSidebarItem: SidebarItem
+    var appState: AppState
 
     var body: some Commands {
+        // Agent Palette (in-app ⌘L, complements the global monitor)
+        CommandGroup(after: .appInfo) {
+            Button("Open Agent Palette") {
+                appState.toggleCommandPalette()
+            }
+            .keyboardShortcut("l", modifiers: [.option, .command])
+        }
+
         // View Menu
         CommandMenu("View") {
             Button("Agents") {
