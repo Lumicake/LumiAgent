@@ -34,10 +34,10 @@ All tool calls pass through a risk-based approval system and are written to an i
 
 | Provider | Models |
 |---|---|
-| **OpenAI** | GPT-4o, GPT-4 Turbo, and more |
-| **Anthropic** | Claude Opus 4, Sonnet 4, Haiku 4 |
-| **Google Gemini** | Gemini 1.5 Pro, Flash, and more |
-| **Ollama** | Any local model — Llama 3, Mistral, CodeLlama, etc. |
+| **OpenAI** | o3, o4-mini, gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini |
+| **Anthropic** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5 |
+| **Google Gemini** | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, gemini-2.0-flash-lite |
+| **Ollama** | llama3.3, qwen3, deepseek-r1, phi4, mistral, gemma3, codellama, llava + any local model |
 
 ### Agent Space
 
@@ -107,7 +107,7 @@ Activate **Agent Mode** in any direct message to grant the agent full control of
 
 ```bash
 git clone https://github.com/Lumicake/Agent-Lumi.git
-cd lumi-agent
+cd Agent-Lumi
 open Package.swift
 ```
 
@@ -249,4 +249,25 @@ Contributions are welcome.
 
 Please keep the LumiTech Production License 1.0 attribution requirement intact in any derivative work.
 
+---
 
+## License
+
+### LumiTech Production License 1.0
+
+Copyright © 2026 LumiTech Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+**1. Attribution Requirement**
+Any derivative work, fork, copy, or redistribution of this Software — whether in source or binary form — must include, in a prominent location within its own license file or documentation, a visible link back to the original repository:
+
+```
+Derived from / based on Lumi Agent by LumiTech Group
+https://github.com/Lumicake/Agent-Lumi
+```
+
+**2. Notice Preservation**
+The above copyright notice, this permission notice, and the attribution requirement in condition (1) must be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
