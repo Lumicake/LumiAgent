@@ -94,6 +94,8 @@ enum AIProvider: String, Codable, CaseIterable {
         switch self {
         case .openai:
             return [
+                "gpt-5.2",
+                "gpt-5-small",
                 "o3",
                 "o4-mini",
                 "gpt-4.1",

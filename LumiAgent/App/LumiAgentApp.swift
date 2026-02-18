@@ -348,17 +348,14 @@ class AppState: ObservableObject {
     private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false) async {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
 
-        // Raise/lower the screen-control flag around the entire response
-        if agentMode {
-            screenControlCount += 1
-            isAgentControllingScreen = true
-        }
+        // Only raise the screen-control flag when a screen tool is actually called,
+        // not at the start of every agent-mode response.
+        var didRaiseScreenControl = false
         defer {
-            if agentMode {
+            if didRaiseScreenControl {
                 screenControlCount = max(0, screenControlCount - 1)
                 if screenControlCount == 0 {
                     isAgentControllingScreen = false
-                    // Clean up any finished tasks from the list
                     screenControlTasks.removeAll { $0.isCancelled }
                 }
             }
@@ -392,25 +389,19 @@ class AppState: ObservableObject {
         }
 
         let repo = AIProviderRepository()
-        // Always include update_self so any agent can modify itself on request
-        var tools = ToolRegistry.shared.getToolsForAI(enabledNames: agent.configuration.enabledTools)
+        // In Agent Mode, give the agent access to every registered tool so it
+        // can complete multi-step tasks (search → reason → write, etc.) without
+        // the user having to pre-enable individual tools.
+        // Outside Agent Mode, respect the agent's explicit enabledTools list.
+        var tools: [AITool]
+        if agentMode {
+            tools = ToolRegistry.shared.getToolsForAI() // all tools, no filter
+        } else {
+            tools = ToolRegistry.shared.getToolsForAI(enabledNames: agent.configuration.enabledTools)
+        }
         if !tools.contains(where: { $0.name == "update_self" }),
            let selfTool = ToolRegistry.shared.getTool(named: "update_self") {
             tools.append(selfTool.toAITool())
-        }
-
-        // Inject screen control tools when Agent Mode is active
-        if agentMode {
-            let screenToolNames = [
-                "get_screen_info", "move_mouse", "click_mouse", "scroll_mouse",
-                "type_text", "press_key", "run_applescript", "take_screenshot"
-            ]
-            for name in screenToolNames {
-                if !tools.contains(where: { $0.name == name }),
-                   let t = ToolRegistry.shared.getTool(named: name) {
-                    tools.append(t.toAITool())
-                }
-            }
         }
 
         // In a group chat, prepend context so each agent knows who else is present
@@ -418,54 +409,55 @@ class AppState: ObservableObject {
             var parts: [String] = []
             if agentMode {
                 parts.append("""
-                You are in Agent Mode with FULL autonomous control of the user's macOS screen.
+                You are in Agent Mode. You have FULL autonomous control of the user's Mac — file system, web, shell, apps, and screen.
 
-                CRITICAL RULES — follow these without exception:
-                1. NEVER tell the user to "manually" do anything. You must complete every step yourself using your tools.
-                2. When a task involves opening an app and then doing something inside it (searching, clicking, navigating), you MUST do the entire task end-to-end.
-                3. Prefer run_applescript for in-app interactions — it is more reliable than raw mouse clicks because it uses System Events accessibility APIs to find UI elements by type/name regardless of screen position.
+                ═══ MULTI-STEP TASK EXECUTION ═══
+                For any task that requires multiple steps (research → reason → write, open app → interact → verify, etc.):
+                  1. PLAN silently: identify every step needed to fully complete the task.
+                  2. EXECUTE each step immediately using the appropriate tool — do NOT narrate future steps, just do them.
+                  3. CHAIN results: use the output of one tool as input to the next tool call.
+                  4. ONLY give a final text response when EVERY step is 100% complete.
+                  5. NEVER stop mid-task and ask the user to continue or do anything manually.
 
-                STANDARD WORKFLOW FOR ANY APP TASK:
-                  a) open_application to launch the app (or bring it to front).
-                  b) Use run_applescript to interact with the app's UI elements directly.
-                  c) If AppleScript UI scripting fails or the app is not scriptable, call take_screenshot to see what is on screen, then use click_mouse / type_text on the correct coordinates.
-                  d) Verify the result with take_screenshot and repeat step (b/c) if needed.
+                EXAMPLE — "search for X, then write a report on the Desktop":
+                  Step 1 → call web_search("X")
+                  Step 2 → call web_search again for more detail if needed
+                  Step 3 → call write_file(path: "/Users/<user>/Desktop/report.txt", content: <full report>)
+                  Step 4 → respond: "Done — report saved to your Desktop."
 
-                APPLESCRIPT UI SCRIPTING PATTERNS (use these inside run_applescript):
-                  • Activate an app and interact with its window:
-                      tell application "AppName" to activate
-                      delay 0.8
-                      tell application "System Events"
-                          tell process "AppName"
-                              set value of text field 1 of window 1 to "search text"
-                              key code 36  -- Return/Enter
-                          end tell
-                      end tell
-                  • Click a named button:
-                      tell application "System Events"
-                          tell process "AppName"
-                              click button "Search" of window 1
-                          end tell
-                      end tell
-                  • Select a menu item:
-                      tell application "System Events"
-                          tell process "AppName"
-                              click menu item "Preferences…" of menu "AppName" of menu bar 1
-                          end tell
-                      end tell
-                  • Use keyboard shortcut Cmd+F to open search in most apps:
-                      tell application "System Events"
-                          tell process "AppName"
-                              keystroke "f" using {command down}
-                              delay 0.3
-                              keystroke "search text"
-                              key code 36
-                          end tell
-                      end tell
+                EXAMPLE — "open Safari and go to apple.com":
+                  Step 1 → call open_application("Safari")
+                  Step 2 → call run_applescript to navigate to the URL
+                  Step 3 → call take_screenshot to verify
+                  Step 4 → respond with result.
 
-                Screen coordinates use a top-left origin: (0, 0) is the top-left corner.
-                Always call get_screen_info first to confirm screen dimensions.
-                Describe each step as you execute it.
+                ═══ TOOL SELECTION GUIDE ═══
+                • Research / web data   → web_search, fetch_url
+                • Files on disk         → write_file, read_file, list_directory, create_directory
+                • Shell / automation    → execute_command, run_applescript
+                • Open apps / URLs      → open_application, open_url
+                • Screen interaction    → get_screen_info, click_mouse, type_text, press_key, take_screenshot
+                • Memory across turns   → memory_save, memory_read
+
+                ═══ SCREEN CONTROL ═══
+                • Prefer run_applescript for in-app UI (more reliable than raw mouse clicks).
+                • AppleScript pattern:
+                    tell application "AppName" to activate
+                    delay 0.8
+                    tell application "System Events"
+                        tell process "AppName"
+                            set value of text field 1 of window 1 to "text"
+                            key code 36  -- Return
+                        end tell
+                    end tell
+                • Fallback: take_screenshot → read coordinates → click_mouse / type_text.
+                • Screen origin is top-left (0,0). Call get_screen_info to get dimensions.
+
+                ═══ ABSOLUTE RULES ═══
+                1. NEVER tell the user to "manually" do anything.
+                2. NEVER stop after one tool call and ask what to do next — keep executing until the full task is done.
+                3. NEVER leave a task half-finished. If a step fails, try an alternative approach.
+                4. Desktop path: use execute_command("echo $HOME") to get the user's home, then write to $HOME/Desktop/.
                 """)
             }
             if isGroup {
@@ -506,8 +498,9 @@ class AppState: ObservableObject {
             } else {
                 // Has tools — run a non-streaming tool execution loop
                 var iteration = 0
+                let maxIterations = agentMode ? 30 : 10
                 var finalContent = ""
-                while iteration < 10 {
+                while iteration < maxIterations {
                     iteration += 1
 
                     // Respect cancellation (Stop button)
@@ -563,7 +556,15 @@ class AppState: ObservableObject {
                                        result: result)
                         aiMessages.append(AIMessage(role: .tool, content: result, toolCallId: toolCall.id))
 
-                        if screenControlToolNames.contains(toolCall.name) { touchedScreen = true }
+                        if screenControlToolNames.contains(toolCall.name) {
+                            touchedScreen = true
+                            // Raise the overlay the first time a screen tool fires
+                            if agentMode && !didRaiseScreenControl {
+                                didRaiseScreenControl = true
+                                screenControlCount += 1
+                                isAgentControllingScreen = true
+                            }
+                        }
                     }
 
                     // ── Vision feedback loop ──────────────────────────────
