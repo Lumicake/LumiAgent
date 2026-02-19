@@ -35,7 +35,7 @@ All tool calls pass through a risk-based approval system and are written to an i
 
 | Provider | Models |
 |---|---|
-| **OpenAI** | o3, o4-mini, gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini |
+| **OpenAI** | o3, o4-mini, gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, gpt-5-small, gpt-5.2 |
 | **Anthropic** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5 |
 | **Google Gemini** | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, gemini-2.0-flash-lite |
 | **Ollama** | llama3.3, qwen3, deepseek-r1, phi4, mistral, gemma3, codellama, llava + any local model |
