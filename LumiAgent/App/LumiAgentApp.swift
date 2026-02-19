@@ -389,17 +389,25 @@ class AppState: ObservableObject {
 
         // All participants are peers — no lead agent.
         // @mentioned agents respond; unaddressed messages go to every participant.
-        // Each agent independently decides whether to respond or pass with [eof].
+        // Agents go one at a time: the second agent sees the first's completed output
+        // before starting, so they build on each other rather than acting in parallel.
         let mentioned = participants.filter { text.contains("@\($0.name)") }
         let targets: [Agent] = mentioned.isEmpty ? participants : mentioned
 
-        for agent in targets {
-            let history = conv.messages.filter { !$0.isStreaming }
-            let task = Task {
-                await streamResponse(from: agent, in: conversationId, history: history, agentMode: agentMode)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            for agent in targets {
+                guard !Task.isCancelled else { break }
+                // Re-snapshot history before each turn so every agent sees
+                // everything the previous agent wrote.
+                let freshHistory = conversations
+                    .first(where: { $0.id == conversationId })?
+                    .messages.filter { !$0.isStreaming } ?? []
+                await streamResponse(from: agent, in: conversationId,
+                                     history: freshHistory, agentMode: agentMode)
             }
-            screenControlTasks.append(task)
         }
+        screenControlTasks.append(task)
     }
 
     private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false, delegationDepth: Int = 0) async {
@@ -566,13 +574,18 @@ class AppState: ObservableObject {
                     Other agents' messages appear prefixed with [AgentName]: in the conversation.
 
                     ═══ HOW TO COLLABORATE ═══
-                    • All agents receive every message. Respond if it's relevant to you; pass with [eof] if it isn't.
-                    • You can talk freely — carry on a back-and-forth with another agent for as long as the task needs.
-                    • Use tools at any point: search, write files, run code, control the screen, etc.
-                    • To continue a thread with a specific agent: "@AgentName: <message or task>" — they will pick it up.
-                    • For independent parallel work: @mention multiple agents in one message.
-                    • Keep the conversation going until the task is truly complete. Don't wrap up prematurely.
-                    • When YOU are certain the whole job is done and nothing is left, end your message with [eof].
+                    Agents take turns — one completes their work fully, then hands off.
+                    • READ FIRST: Before acting, read all previous messages to understand what has already been done.
+                      Never duplicate or redo work a peer has already completed.
+                    • ACT, DON'T OVERLAP: Do your part of the task using tools, then hand off cleanly.
+                      Don't start something another agent is already doing or has just finished.
+                    • HAND OFF with @AgentName: <clear instruction of what's left> — they will pick up exactly where you stopped.
+                      Hand off to ONE agent at a time. Avoid mentioning multiple agents in one message unless
+                      they truly need to act at the same time (which is rare).
+                    • CONTINUE FREELY: After receiving a handoff, act on it. Then hand back or forward as needed.
+                      The conversation can go back-and-forth as many times as the task requires.
+                    • USE TOOLS at any point: search, write files, run code, control the screen, etc.
+                    • FINISH: When everything is truly done, end your message with [eof].
 
                     ═══ SILENCE PROTOCOL ═══
                     • Not your turn, or nothing meaningful to add → respond with exactly: [eof] (hidden from user).
@@ -756,10 +769,10 @@ class AppState: ObservableObject {
         }
 
         // ── Agent-to-agent delegation ─────────────────────────────────────────
-        // After this agent's message is final, scan it for @mentions of other
-        // participants. Each mentioned agent is triggered with the full updated
-        // history so they see this agent's message and can act on the delegation.
-        // Capped at depth 4 to prevent infinite loops.
+        // After this agent's message is final, scan it for @mentions of peers.
+        // Delegates run ONE AT A TIME: each one finishes completely before the next
+        // starts, so every agent sees the prior agent's completed work in history.
+        // Capped at depth 20 to prevent infinite loops.
         if isGroup && delegationDepth < 20 && !Task.isCancelled,
            let ci = conversations.firstIndex(where: { $0.id == conversationId }),
            let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
@@ -769,19 +782,20 @@ class AppState: ObservableObject {
                 agentResponse.range(of: "@\(other.name)", options: .caseInsensitive) != nil
             }
             if !delegatedAgents.isEmpty {
-                let freshHistory = conversations[ci].messages.filter { !$0.isStreaming }
+                // Sequential: await each delegate in order.
+                // Re-snapshot history before each one so it sees all prior output.
                 for target in delegatedAgents {
-                    let t = Task { [weak self] in
-                        guard let self else { return }
-                        await self.streamResponse(
-                            from: target,
-                            in: conversationId,
-                            history: freshHistory,
-                            agentMode: agentMode,
-                            delegationDepth: delegationDepth + 1
-                        )
-                    }
-                    screenControlTasks.append(t)
+                    guard !Task.isCancelled else { break }
+                    let freshHistory = conversations
+                        .first(where: { $0.id == conversationId })?
+                        .messages.filter { !$0.isStreaming } ?? []
+                    await streamResponse(
+                        from: target,
+                        in: conversationId,
+                        history: freshHistory,
+                        agentMode: agentMode,
+                        delegationDepth: delegationDepth + 1
+                    )
                 }
             }
         }
