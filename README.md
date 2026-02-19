@@ -31,7 +31,7 @@ All tool calls pass through a risk-based approval system and are written to an i
 
 ## Features
 
-### Multi-AI Provider Support
+### Multi-AI Provider Support (API)
 
 | Provider | Models |
 |---|---|
@@ -39,6 +39,9 @@ All tool calls pass through a risk-based approval system and are written to an i
 | **Anthropic** | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5 |
 | **Google Gemini** | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, gemini-2.0-flash-lite |
 | **Ollama** | llama3.3, qwen3, deepseek-r1, phi4, mistral, gemma3, codellama, llava + any local model |
+
+^ LumiTech and its products are not affiliated with, endorsed by, or sponsored by any of the providers listed above. The table above describes API providers supported by this application.
+
 
 ### Agent Space
 
