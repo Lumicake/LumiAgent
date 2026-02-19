@@ -63,3 +63,7 @@ APIKeys.plist
 # App-specific
 LumiAgent.xcodeproj
 *.xcworkspace
+
+# Runable — never commit built app bundles
+runable/*.app
+runable/**/*.app
