@@ -55,12 +55,18 @@ struct AgentRowView: View {
                 StatusBadge(status: agent.status)
             }
 
-            HStack {
+            HStack(spacing: 4) {
                 Image(systemName: providerIcon)
                     .foregroundStyle(.secondary)
-                Text(agent.configuration.model)
+                Text("Powered by \(agent.configuration.provider.rawValue)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("·")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Text(agent.configuration.model)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
         }
         .padding(.vertical, 4)

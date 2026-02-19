@@ -101,7 +101,7 @@ private struct ReadOnlyView: View {
                 VStack(alignment: .leading) {
                     Text(agent.name)
                         .font(.largeTitle)
-                    Text(agent.configuration.provider.rawValue)
+                    Text("Powered by \(agent.configuration.provider.rawValue)")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }

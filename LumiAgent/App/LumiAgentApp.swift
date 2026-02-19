@@ -387,14 +387,11 @@ class AppState: ObservableObject {
         let conv = conversations[index]
         let participants = agents.filter { conv.participantIds.contains($0.id) }
 
-        // Determine targets.
-        // @mentioned agents all respond simultaneously.
-        // In a multi-agent group with no @mention, only the first participant (the "lead")
-        // responds initially; it can then delegate to others via @mentions in its reply.
+        // All participants are peers — no lead agent.
+        // @mentioned agents respond; unaddressed messages go to every participant.
+        // Each agent independently decides whether to respond or pass with [eof].
         let mentioned = participants.filter { text.contains("@\($0.name)") }
-        let targets: [Agent] = mentioned.isEmpty && participants.count > 1
-            ? Array(participants.prefix(1))
-            : (mentioned.isEmpty ? participants : mentioned)
+        let targets: [Agent] = mentioned.isEmpty ? participants : mentioned
 
         for agent in targets {
             let history = conv.messages.filter { !$0.isStreaming }
@@ -560,28 +557,27 @@ class AppState: ObservableObject {
                         return "• \(other.name): \(role)"
                     }.joined(separator: "\n")
                     parts.append("""
-                    You are \(agent.name). You are in a multi-agent group conversation.
+                    You are \(agent.name). You are in a multi-agent group conversation. There is no leader — all agents are equal peers.
 
                     ═══ PARTICIPANTS ═══
                     \(peerList)
                     • You: \(agent.name)
 
-                    Other agents' messages appear in the conversation prefixed with [AgentName]:
+                    Other agents' messages appear prefixed with [AgentName]: in the conversation.
 
-                    ═══ MULTI-AGENT COLLABORATION ═══
-                    Before responding, reason about who is best placed to handle this task:
-                    • If it's entirely yours → complete it fully.
-                    • If another agent is better suited → delegate: "@AgentName: <specific task>"
-                    • If the task splits cleanly → do your part, then "@AgentName: <their part>"
-                    • For truly independent subtasks → @mention multiple agents in one message (they run in parallel)
-                    • To hand off your results → "@AgentName: Here's what I found — please continue/synthesise."
+                    ═══ HOW TO COLLABORATE ═══
+                    • All agents receive every message. Respond if it's relevant to you; pass with [eof] if it isn't.
+                    • You can talk freely — carry on a back-and-forth with another agent for as long as the task needs.
+                    • Use tools at any point: search, write files, run code, control the screen, etc.
+                    • To continue a thread with a specific agent: "@AgentName: <message or task>" — they will pick it up.
+                    • For independent parallel work: @mention multiple agents in one message.
+                    • Keep the conversation going until the task is truly complete. Don't wrap up prematurely.
+                    • When YOU are certain the whole job is done and nothing is left, end your message with [eof].
 
-                    DELEGATION RULES:
-                    1. Always complete your own portion BEFORE delegating.
-                    2. If you receive a delegation (you see @\(agent.name): in the conversation), execute it fully — do not re-delegate.
-                    3. Be specific in delegations: give the other agent exactly what they need.
-                    4. Depth limit is 4 hops — at deep nesting just complete the task yourself.
-                    5. One agent must eventually write the final answer to the user.
+                    ═══ SILENCE PROTOCOL ═══
+                    • Not your turn, or nothing meaningful to add → respond with exactly: [eof] (hidden from user).
+                    • Spoke your piece and want to hand off → say what you need, then end with [eof].
+                    • Near exchange limit (20) → just finish the task yourself instead of delegating further.
                     """)
                 }
             }
@@ -740,12 +736,31 @@ class AppState: ObservableObject {
             conversations[ci].updatedAt = Date()
         }
 
+        // ── [eof] silence handling ────────────────────────────────────────────
+        // Agents respond with [eof] (alone or at the end) to pass silently.
+        // Strip the marker; if nothing meaningful remains, remove the message.
+        if isGroup,
+           let ci = conversations.firstIndex(where: { $0.id == conversationId }),
+           let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
+            let raw = conversations[ci].messages[mi].content
+            let cleaned = raw
+                .replacingOccurrences(of: "[eof]", with: "", options: .caseInsensitive)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.isEmpty {
+                // Complete silent pass — remove placeholder, nothing to delegate
+                conversations[ci].messages.remove(at: mi)
+                return
+            } else if cleaned != raw {
+                conversations[ci].messages[mi].content = cleaned
+            }
+        }
+
         // ── Agent-to-agent delegation ─────────────────────────────────────────
         // After this agent's message is final, scan it for @mentions of other
         // participants. Each mentioned agent is triggered with the full updated
         // history so they see this agent's message and can act on the delegation.
         // Capped at depth 4 to prevent infinite loops.
-        if isGroup && delegationDepth < 4 && !Task.isCancelled,
+        if isGroup && delegationDepth < 20 && !Task.isCancelled,
            let ci = conversations.firstIndex(where: { $0.id == conversationId }),
            let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
             let agentResponse = conversations[ci].messages[mi].content
