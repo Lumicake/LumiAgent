@@ -1074,6 +1074,146 @@ final class ToolRegistry {
             handler: { args in try await ScreenControlTools.runAppleScript(script: args["script"] ?? "") }
         ))
 
+        // MARK: Bluetooth
+
+        register(RegisteredTool(
+            name: "bluetooth_list_devices",
+            description: "List all paired Bluetooth devices and whether each is currently connected. Also shows battery level when available.",
+            category: .bluetooth,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await BluetoothTools.listDevices() }
+        ))
+
+        register(RegisteredTool(
+            name: "bluetooth_connect",
+            description: "Connect or disconnect a paired Bluetooth device by name or MAC address. Requires blueutil (brew install blueutil).",
+            category: .bluetooth,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "device": AIToolProperty(type: "string",
+                        description: "Device name or MAC address, e.g. \"AirPods Pro\" or \"xx:xx:xx:xx:xx:xx\""),
+                    "action": AIToolProperty(type: "string",
+                        description: "connect or disconnect",
+                        enumValues: ["connect", "disconnect"])
+                ],
+                required: ["device", "action"]
+            ),
+            handler: { args in
+                try await BluetoothTools.connectDevice(
+                    device: args["device"] ?? "",
+                    action: args["action"] ?? "connect"
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "bluetooth_scan",
+            description: "Scan for nearby discoverable Bluetooth devices (10-second inquiry). Requires blueutil (brew install blueutil).",
+            category: .bluetooth,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await BluetoothTools.scanDevices() }
+        ))
+
+        // MARK: Volume & Audio
+
+        register(RegisteredTool(
+            name: "get_volume",
+            description: "Get the current system output volume level (0–100) and mute state.",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await VolumeTools.getVolume() }
+        ))
+
+        register(RegisteredTool(
+            name: "set_volume",
+            description: "Set the system output volume to a level between 0 (silent) and 100 (max).",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "level": AIToolProperty(type: "string",
+                        description: "Volume level 0–100")
+                ],
+                required: ["level"]
+            ),
+            handler: { args in
+                try await VolumeTools.setVolume(level: Int(args["level"] ?? "50") ?? 50)
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "set_mute",
+            description: "Mute or unmute the system audio output.",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "muted": AIToolProperty(type: "string",
+                        description: "true to mute, false to unmute",
+                        enumValues: ["true", "false"])
+                ],
+                required: ["muted"]
+            ),
+            handler: { args in
+                try await VolumeTools.setMute(muted: args["muted"]?.lowercased() == "true")
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "list_audio_devices",
+            description: "List all available audio input and output devices on this Mac.",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await VolumeTools.listAudioDevices() }
+        ))
+
+        register(RegisteredTool(
+            name: "set_audio_output",
+            description: "Switch the system audio output device by name (e.g. switch to AirPods or a Bluetooth speaker). Requires SwitchAudioSource (brew install switchaudio-osx).",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "device": AIToolProperty(type: "string",
+                        description: "Exact device name as shown by list_audio_devices, e.g. \"AirPods Pro\"")
+                ],
+                required: ["device"]
+            ),
+            handler: { args in
+                try await VolumeTools.setOutputDevice(device: args["device"] ?? "")
+            }
+        ))
+
+        // MARK: Media Control
+
+        register(RegisteredTool(
+            name: "media_control",
+            description: "Control media playback in Spotify, Music, Podcasts, or any running media app. Actions: play, pause, toggle, next, previous, stop.",
+            category: .media,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "action": AIToolProperty(type: "string",
+                        description: "Playback action",
+                        enumValues: ["play", "pause", "toggle", "next", "previous", "stop"]),
+                    "app": AIToolProperty(type: "string",
+                        description: "Target app name: Spotify, Music, Podcasts. Omit to auto-detect the running player.")
+                ],
+                required: ["action"]
+            ),
+            handler: { args in
+                try await MediaControlTools.control(
+                    action: args["action"] ?? "toggle",
+                    app: args["app"]
+                )
+            }
+        ))
+
         // MARK: Self-Modification
         // Intercepted by AppState.streamResponse — handler here is a placeholder only.
 
@@ -1145,6 +1285,8 @@ enum ToolCategory: String, CaseIterable {
     case clipboard
     case screenshot
     case screenControl
+    case bluetooth
+    case media
 
     var displayName: String {
         switch self {
@@ -1159,6 +1301,8 @@ enum ToolCategory: String, CaseIterable {
         case .clipboard:        return "Clipboard"
         case .screenshot:       return "Screenshot"
         case .screenControl:    return "Screen Control"
+        case .bluetooth:        return "Bluetooth"
+        case .media:            return "Media & Volume"
         }
     }
 
@@ -1175,6 +1319,8 @@ enum ToolCategory: String, CaseIterable {
         case .clipboard:        return "clipboard.fill"
         case .screenshot:       return "camera.fill"
         case .screenControl:    return "cursorarrow.motionlines"
+        case .bluetooth:        return "antenna.radiowaves.left.and.right"
+        case .media:            return "music.note"
         }
     }
 }

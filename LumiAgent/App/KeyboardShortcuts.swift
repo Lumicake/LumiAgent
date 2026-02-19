@@ -36,15 +36,10 @@ struct LumiAgentCommands: Commands {
             }
             .keyboardShortcut("2", modifiers: .command)
 
-            Button("Approval Queue") {
-                selectedSidebarItem = .queue
+            Button("Automations") {
+                selectedSidebarItem = .automation
             }
             .keyboardShortcut("3", modifiers: .command)
-
-            Button("Audit Logs") {
-                selectedSidebarItem = .audit
-            }
-            .keyboardShortcut("4", modifiers: .command)
 
             Divider()
 

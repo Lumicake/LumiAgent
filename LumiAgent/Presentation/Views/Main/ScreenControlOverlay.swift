@@ -59,12 +59,12 @@ final class ScreenControlOverlayController: NSObject {
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.isReleasedWhenClosed = false
 
-        // Center on the main display
+        // Bottom-center of the main display, 24 pt above the Dock / screen edge
         if let screen = NSScreen.main {
-            let sf = screen.frame
+            let sf = screen.visibleFrame   // excludes Dock and menu bar
             let origin = NSPoint(
                 x: sf.midX - panelSize.width / 2,
-                y: sf.midY - panelSize.height / 2
+                y: sf.minY + 24
             )
             p.setFrameOrigin(origin)
         }

@@ -14,7 +14,6 @@ import SwiftUI
 struct MainWindow: View {
     @EnvironmentObject var appState: AppState
     @StateObject var executionEngine = AgentExecutionEngine()
-    @StateObject var approvalFlow = ApprovalFlow()
 
     var body: some View {
         NavigationSplitView {
@@ -70,7 +69,6 @@ struct MainWindow: View {
                 .frame(minWidth: 600, minHeight: 500)
         }
         .environmentObject(executionEngine)
-        .environmentObject(approvalFlow)
         .focusedSceneValue(\.executionEngine, executionEngine)
         // Show / hide the floating screen-control HUD based on agent state
         .onChange(of: appState.isAgentControllingScreen) { _, isControlling in
@@ -129,12 +127,10 @@ struct ContentListView: View {
                 AgentSpaceView()
             case .history:
                 ToolHistoryListView()
-            case .queue:
-                ApprovalQueueListView()
-            case .audit:
-                AuditLogListView()
+            case .automation:
+                AutomationListView()
             case .settings:
-                Text("Settings")
+                SettingsListView()
             }
         }
     }
@@ -168,12 +164,10 @@ struct DetailView: View {
                 } else {
                     EmptyDetailView(message: "Select an agent to view tool history")
                 }
-            case .queue:
-                ApprovalDetailView()
-            case .audit:
-                AuditLogDetailView()
+            case .automation:
+                AutomationDetailView()
             case .settings:
-                EmptyDetailView(message: "Settings")
+                SettingsDetailView()
             }
         }
     }
@@ -473,72 +467,336 @@ struct ToolCallRow: View {
     }
 }
 
-struct ApprovalQueueListView: View {
-    @EnvironmentObject var approvalFlow: ApprovalFlow
+// MARK: - Automation Views
+
+struct AutomationListView: View {
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
-        List(approvalFlow.pendingRequests) { request in
-            VStack(alignment: .leading) {
-                Text(request.toolCall.name)
-                    .font(.headline)
-                Text(request.reasoning)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        Group {
+            if appState.automations.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "bolt.horizontal")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("No automations yet")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Text("Create an automation to let agents act on triggers automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    Button("New Automation") { appState.createAutomation() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(appState.automations, selection: $appState.selectedAutomationId) { rule in
+                    AutomationRow(rule: rule)
+                        .tag(rule.id)
+                }
+                .navigationTitle("Automations")
+                .toolbar {
+                    ToolbarItem {
+                        Button { appState.createAutomation() } label: {
+                            Label("New", systemImage: "plus")
+                        }
+                    }
+                }
             }
         }
-        .navigationTitle("Approval Queue")
     }
 }
 
-struct ApprovalDetailView: View {
-    @EnvironmentObject var approvalFlow: ApprovalFlow
+private struct AutomationRow: View {
+    let rule: AutomationRule
 
     var body: some View {
-        if let request = approvalFlow.currentRequest {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Approval Required")
-                    .font(.title)
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(rule.isEnabled ? 0.15 : 0.05))
+                    .frame(width: 32, height: 32)
+                Image(systemName: rule.trigger.icon)
+                    .font(.caption)
+                    .foregroundStyle(rule.isEnabled ? Color.accentColor : Color.secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rule.title)
+                    .font(.callout).fontWeight(.medium)
+                    .foregroundStyle(rule.isEnabled ? .primary : .secondary)
+                Text(rule.trigger.displayName)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !rule.isEnabled {
+                Text("Off")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
 
-                Text(request.toolCall.name)
-                    .font(.headline)
+struct AutomationDetailView: View {
+    @EnvironmentObject var appState: AppState
 
-                Text(request.reasoning)
+    var body: some View {
+        if let id = appState.selectedAutomationId,
+           let index = appState.automations.firstIndex(where: { $0.id == id }) {
+            AutomationEditorView(
+                rule: $appState.automations[index],
+                onDelete: {
+                    appState.automations.remove(at: index)
+                    appState.selectedAutomationId = nil
+                },
+                onRun: { appState.runAutomation(id: id) }
+            )
+        } else {
+            EmptyDetailView(message: "Select an automation")
+        }
+    }
+}
 
-                HStack {
-                    Button("Deny") {
-                        Task {
-                            try? await approvalFlow.denyCurrent()
+private struct AutomationEditorView: View {
+    @Binding var rule: AutomationRule
+    let onDelete: () -> Void
+    let onRun: () -> Void
+    @EnvironmentObject var appState: AppState
+
+    // Local state for trigger picker sub-fields
+    @State private var triggerType: TriggerType = .manual
+    @State private var schedHour: Int = 9
+    @State private var schedMinute: Int = 0
+    @State private var schedRepeat: RepeatSchedule = .daily
+    @State private var appName: String = ""
+    @State private var deviceName: String = ""
+    @State private var ssid: String = ""
+
+    enum TriggerType: String, CaseIterable, Identifiable {
+        case manual              = "Manual"
+        case scheduled           = "Scheduled"
+        case appLaunched         = "App Launched"
+        case appQuit             = "App Quit"
+        case bluetoothConnected  = "Bluetooth Connected"
+        case bluetoothDisconnected = "Bluetooth Disconnected"
+        case wifiConnected       = "Wi-Fi Connected"
+        case powerPlugged        = "Power Plugged In"
+        case powerUnplugged      = "Power Unplugged"
+        case screenUnlocked      = "Screen Unlocked"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Title
+                TextField("Automation title", text: $rule.title)
+                    .font(.title2).fontWeight(.semibold)
+                    .textFieldStyle(.plain)
+
+                Divider()
+
+                // Notes (freeform, Apple-Notes style)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TASK")
+                        .font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+                    ZStack(alignment: .topLeading) {
+                        if rule.notes.isEmpty {
+                            Text("Describe what the agent should do…\nExample: Search for today's top tech news and write a summary to my Desktop.")
+                                .font(.body).foregroundStyle(.tertiary)
+                                .padding(.horizontal, 10).padding(.vertical, 10)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $rule.notes)
+                            .font(.body)
+                            .frame(minHeight: 180)
+                            .padding(4)
+                            .scrollContentBackground(.hidden)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.secondary.opacity(0.07))
+                    )
+                }
+
+                Divider()
+
+                // Trigger picker
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TRIGGER")
+                        .font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+
+                    Picker("Trigger", selection: $triggerType) {
+                        ForEach(TriggerType.allCases) { t in
+                            Text(t.rawValue).tag(t)
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .pickerStyle(.menu)
+                    .onChange(of: triggerType) { _, _ in syncTriggerFromUI() }
 
-                    Button("Approve") {
-                        Task {
-                            try? await approvalFlow.approveCurrent()
+                    // Context-specific fields
+                    switch triggerType {
+                    case .scheduled:
+                        HStack(spacing: 16) {
+                            Stepper("Hour: \(schedHour)", value: $schedHour, in: 0...23)
+                                .onChange(of: schedHour) { _, _ in syncTriggerFromUI() }
+                            Stepper("Min: \(String(format: "%02d", schedMinute))",
+                                    value: $schedMinute, in: 0...59, step: 5)
+                                .onChange(of: schedMinute) { _, _ in syncTriggerFromUI() }
                         }
+                        Picker("Repeat", selection: $schedRepeat) {
+                            ForEach(RepeatSchedule.allCases) { s in
+                                Text(s.rawValue).tag(s)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: schedRepeat) { _, _ in syncTriggerFromUI() }
+
+                    case .appLaunched, .appQuit:
+                        TextField("App name (e.g. Safari)", text: $appName)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: appName) { _, _ in syncTriggerFromUI() }
+
+                    case .bluetoothConnected, .bluetoothDisconnected:
+                        TextField("Device name (e.g. AirPods Pro)", text: $deviceName)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: deviceName) { _, _ in syncTriggerFromUI() }
+
+                    case .wifiConnected:
+                        TextField("Network name (SSID)", text: $ssid)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: ssid) { _, _ in syncTriggerFromUI() }
+
+                    default:
+                        EmptyView()
+                    }
+                }
+
+                Divider()
+
+                // Agent picker
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("AGENT")
+                        .font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+                    Picker("Agent", selection: $rule.agentId) {
+                        Text("None").tag(Optional<UUID>.none)
+                        ForEach(appState.agents) { agent in
+                            Text(agent.name).tag(Optional(agent.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Divider()
+
+                // Enable + Run + Delete
+                HStack {
+                    Toggle("Enabled", isOn: $rule.isEnabled)
+                        .toggleStyle(.switch)
+                    Spacer()
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.red)
+                    Button(action: onRun) {
+                        Label("Run Now", systemImage: "play.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 }
+
+                if let last = rule.lastRunAt {
+                    Text("Last run: \(last.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
             }
-            .padding()
-        } else {
-            EmptyDetailView(message: "No pending approvals")
+            .padding(20)
+        }
+        .onAppear { syncUIFromTrigger() }
+    }
+
+    private func syncUIFromTrigger() {
+        switch rule.trigger {
+        case .manual:
+            triggerType = .manual
+        case .scheduled(let h, let m, let s):
+            triggerType = .scheduled; schedHour = h; schedMinute = m; schedRepeat = s
+        case .appLaunched(let n):
+            triggerType = .appLaunched; appName = n
+        case .appQuit(let n):
+            triggerType = .appQuit; appName = n
+        case .bluetoothConnected(let d):
+            triggerType = .bluetoothConnected; deviceName = d
+        case .bluetoothDisconnected(let d):
+            triggerType = .bluetoothDisconnected; deviceName = d
+        case .wifiConnected(let s):
+            triggerType = .wifiConnected; ssid = s
+        case .powerPlugged:
+            triggerType = .powerPlugged
+        case .powerUnplugged:
+            triggerType = .powerUnplugged
+        case .screenUnlocked:
+            triggerType = .screenUnlocked
+        }
+    }
+
+    private func syncTriggerFromUI() {
+        switch triggerType {
+        case .manual:              rule.trigger = .manual
+        case .scheduled:           rule.trigger = .scheduled(hour: schedHour, minute: schedMinute, schedule: schedRepeat)
+        case .appLaunched:         rule.trigger = .appLaunched(name: appName)
+        case .appQuit:             rule.trigger = .appQuit(name: appName)
+        case .bluetoothConnected:  rule.trigger = .bluetoothConnected(deviceName: deviceName)
+        case .bluetoothDisconnected: rule.trigger = .bluetoothDisconnected(deviceName: deviceName)
+        case .wifiConnected:       rule.trigger = .wifiConnected(ssid: ssid)
+        case .powerPlugged:        rule.trigger = .powerPlugged
+        case .powerUnplugged:      rule.trigger = .powerUnplugged
+        case .screenUnlocked:      rule.trigger = .screenUnlocked
         }
     }
 }
 
-struct AuditLogListView: View {
+// MARK: - Settings List + Detail Views
+
+struct SettingsListView: View {
+    @EnvironmentObject var appState: AppState
+
+    private let sections: [(title: String, icon: String, id: String)] = [
+        ("Account", "person.crop.circle", "account"),
+        ("API Keys", "key.fill", "apiKeys"),
+        ("Security", "shield.fill", "security"),
+        ("About", "info.circle.fill", "about"),
+    ]
+
     var body: some View {
-        List {
-            Text("Audit logs coming soon...")
+        List(sections, id: \.id, selection: $appState.selectedSettingsSection) { section in
+            Label(section.title, systemImage: section.icon)
+                .tag(section.id)
         }
-        .navigationTitle("Audit Logs")
+        .navigationTitle("Settings")
     }
 }
 
-struct AuditLogDetailView: View {
+struct SettingsDetailView: View {
+    @EnvironmentObject var appState: AppState
+
     var body: some View {
-        EmptyDetailView(message: "Select an audit log entry")
+        switch appState.selectedSettingsSection {
+        case "account":
+            AccountTab()
+        case "apiKeys":
+            APIKeysTab()
+        case "security":
+            SecurityTab()
+        case "about":
+            AboutTab()
+        default:
+            EmptyDetailView(message: "Select a setting")
+        }
     }
 }
 

@@ -683,6 +683,210 @@ enum MemoryTools {
     }
 }
 
+// MARK: - Bluetooth Tools
+
+enum BluetoothTools {
+
+    /// List all paired Bluetooth devices and their connection status.
+    static func listDevices() async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", "system_profiler SPBluetoothDataType 2>/dev/null"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        try proc.run(); proc.waitUntilExit()
+        let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return raw.isEmpty ? "No Bluetooth information available." : raw
+    }
+
+    /// Connect or disconnect a paired device by name or MAC address.
+    /// Requires `blueutil` (brew install blueutil).
+    static func connectDevice(device: String, action: String) async throws -> String {
+        let act = action.lowercased()
+        guard act == "connect" || act == "disconnect" else {
+            throw ToolError.commandFailed("action must be 'connect' or 'disconnect'")
+        }
+        // Locate blueutil
+        let which = try await shell("which blueutil 2>/dev/null || echo ''")
+        let blueutilPath = which.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !blueutilPath.isEmpty else {
+            return """
+            blueutil is not installed. Install it with:
+              brew install blueutil
+            Then retry: bluetooth_connect device=\"\(device)\" action=\"\(action)\"
+            """
+        }
+        let cmd = "\(blueutilPath) --\(act) \"\(device)\""
+        let result = try await shell(cmd)
+        return result.isEmpty ? "\(act.capitalized)ed \(device)" : result
+    }
+
+    /// Scan for discoverable nearby Bluetooth devices (10-second inquiry).
+    /// Requires `blueutil` (brew install blueutil).
+    static func scanDevices() async throws -> String {
+        let which = try await shell("which blueutil 2>/dev/null || echo ''")
+        let blueutilPath = which.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !blueutilPath.isEmpty else {
+            return "blueutil is not installed. Install with: brew install blueutil"
+        }
+        let result = try await shell("\(blueutilPath) --inquiry --format new-json 2>/dev/null || \(blueutilPath) --inquiry")
+        return result.isEmpty ? "No devices found nearby." : result
+    }
+
+    private static func shell(_ cmd: String) async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", cmd]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        try proc.run(); proc.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+}
+
+// MARK: - Volume Tools
+
+enum VolumeTools {
+
+    static func getVolume() async throws -> String {
+        let script = "get volume settings"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try proc.run(); proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return "Volume settings: \(out)"
+    }
+
+    static func setVolume(level: Int) async throws -> String {
+        let clamped = max(0, min(100, level))
+        let script = "set volume output volume \(clamped)"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        try proc.run(); proc.waitUntilExit()
+        return "Volume set to \(clamped)%"
+    }
+
+    static func setMute(muted: Bool) async throws -> String {
+        let script = muted
+            ? "set volume with output muted"
+            : "set volume without output muted"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        try proc.run(); proc.waitUntilExit()
+        return muted ? "Audio muted." : "Audio unmuted."
+    }
+
+    /// List all audio output devices.
+    static func listAudioDevices() async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", "system_profiler SPAudioDataType 2>/dev/null"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try proc.run(); proc.waitUntilExit()
+        let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return raw.isEmpty ? "No audio device information available." : raw
+    }
+
+    /// Switch the system audio output device by name.
+    /// Requires `SwitchAudioSource` (brew install switchaudio-osx).
+    static func setOutputDevice(device: String) async throws -> String {
+        let which = try? await shell("which SwitchAudioSource 2>/dev/null || echo ''")
+        let tool = (which ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tool.isEmpty else {
+            return """
+            SwitchAudioSource is not installed. Install it with:
+              brew install switchaudio-osx
+            Then retry: set_audio_output device=\"\(device)\"
+            Available devices can be found with: list_audio_devices
+            """
+        }
+        let result = try await shell("\(tool) -s \"\(device)\"")
+        return result.isEmpty ? "Switched audio output to \(device)" : result
+    }
+
+    private static func shell(_ cmd: String) async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", cmd]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        try proc.run(); proc.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+}
+
+// MARK: - Media Control Tools
+
+enum MediaControlTools {
+
+    /// Play, pause, toggle, next, previous, or stop media in Spotify, Music, or any running player.
+    static func control(action: String, app: String?) async throws -> String {
+        let act = action.lowercased()
+
+        // Determine which app to target
+        let target: String
+        if let a = app, !a.isEmpty {
+            target = a
+        } else {
+            // Auto-detect: prefer Spotify, then Music, then any running media app
+            let running = try? await shell(
+                "osascript -e 'tell application \"System Events\" to get name of every process whose background only is false'"
+            )
+            let procs = running ?? ""
+            if procs.contains("Spotify") { target = "Spotify" }
+            else if procs.contains("Music") { target = "Music" }
+            else if procs.contains("Podcasts") { target = "Podcasts" }
+            else { target = "Music" }
+        }
+
+        let command: String
+        switch act {
+        case "play":          command = "tell application \"\(target)\" to play"
+        case "pause":         command = "tell application \"\(target)\" to pause"
+        case "toggle", "playpause":
+            command = "tell application \"\(target)\" to playpause"
+        case "next", "next track":
+            command = "tell application \"\(target)\" to next track"
+        case "previous", "prev", "previous track":
+            command = "tell application \"\(target)\" to previous track"
+        case "stop":          command = "tell application \"\(target)\" to stop"
+        default:
+            throw ToolError.commandFailed("Unknown action '\(action)'. Use: play, pause, toggle, next, previous, stop")
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", command]
+        proc.standardError = Pipe()
+        try proc.run(); proc.waitUntilExit()
+        return "\(act.capitalized) sent to \(target)."
+    }
+
+    private static func shell(_ cmd: String) async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", cmd]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        try proc.run(); proc.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+}
+
 // MARK: - Screen Control Tools
 // Requires Accessibility access: System Settings → Privacy & Security → Accessibility → LumiAgent
 
@@ -707,10 +911,34 @@ enum ScreenControlTools {
 
     // MARK: Mouse Control
 
+    /// Convert tool coordinates (top-left origin, px from top-left of NSScreen.main) to
+    /// global CGEvent coordinates (top-left origin of primary display, Y increases downward).
+    ///
+    /// CGEvent is NOT Quartz/NSScreen — it uses top-left origin.
+    /// NSScreen uses bottom-left origin (Y upward, Cartesian).
+    ///
+    /// For a screen at NSScreen frame (ox, oy, w, h), a point (x, y) measured from its
+    /// top-left corner maps to CGEvent global coords:
+    ///   CGEvent.x = ox + x
+    ///   CGEvent.y = primaryH - oy - h + y        (where primaryH = height of primary display)
+    ///
+    /// For the primary display (oy=0, h=primaryH): CGEvent.y = y — no flip, passes through.
+    private static func toQuartzPoint(x: Double, y: Double, frame: CGRect) -> CGPoint {
+        // Primary display always has NSScreen frame.origin = (0, 0).
+        let primaryH = NSScreen.screens
+            .first { $0.frame.origin.x == 0 && $0.frame.origin.y == 0 }
+            .map { $0.frame.height }
+            ?? frame.height
+        return CGPoint(
+            x: frame.origin.x + x,
+            y: primaryH - frame.origin.y - frame.height + y
+        )
+    }
+
     /// Move mouse cursor. Coordinates: (0,0) = top-left of screen.
     static func moveMouse(x: Double, y: Double) async throws -> String {
-        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
-        let point = CGPoint(x: x, y: h - y)
+        let frame = await MainActor.run { NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        let point = toQuartzPoint(x: x, y: y, frame: frame)
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                 mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
         return "Mouse moved to (\(Int(x)), \(Int(y)))"
@@ -718,8 +946,8 @@ enum ScreenControlTools {
 
     /// Click at position. button: "left" or "right". clicks: 1 or 2 for double-click.
     static func clickMouse(x: Double, y: Double, button: String, clicks: Int) async throws -> String {
-        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
-        let point = CGPoint(x: x, y: h - y)
+        let frame = await MainActor.run { NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        let point = toQuartzPoint(x: x, y: y, frame: frame)
         let isRight = button.lowercased() == "right"
         let btn: CGMouseButton = isRight ? .right : .left
         let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
@@ -742,8 +970,8 @@ enum ScreenControlTools {
 
     /// Scroll at position. Positive deltaY = scroll up, negative = scroll down.
     static func scrollMouse(x: Double, y: Double, deltaX: Int, deltaY: Int) async throws -> String {
-        let h = await MainActor.run { NSScreen.main?.frame.height ?? 900 }
-        let point = CGPoint(x: x, y: h - y)
+        let frame = await MainActor.run { NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        let point = toQuartzPoint(x: x, y: y, frame: frame)
         let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
                             wheel1: Int32(deltaY), wheel2: Int32(deltaX), wheel3: 0)
         event?.location = point

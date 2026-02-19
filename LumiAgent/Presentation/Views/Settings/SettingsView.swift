@@ -28,7 +28,7 @@ struct SettingsView: View {
 
 // MARK: - Account Tab
 
-private struct AccountTab: View {
+struct AccountTab: View {
     // Stored account state
     @AppStorage("account.name") private var accountName = ""
     @AppStorage("account.email") private var accountEmail = ""
@@ -144,10 +144,6 @@ private struct AccountTab: View {
         accountToken = UUID().uuidString
         joinedAt = joinedAt == 0 ? Date().timeIntervalSince1970 : joinedAt
         statusMessage = "Signed in as \(accountEmail)"
-        if !rememberLogin {
-            // Clear token on app relaunch if remember me is off
-            accountToken = ""
-        }
         loginPassword = ""
     }
 
@@ -176,7 +172,7 @@ private struct AccountTab: View {
 
 // MARK: - API Keys Tab
 
-private struct APIKeysTab: View {
+struct APIKeysTab: View {
     @AppStorage("settings.ollamaURL") private var ollamaURL = AppConfig.defaultOllamaURL
 
     // Input fields
@@ -354,11 +350,9 @@ private struct APIKeysTab: View {
 
 // MARK: - Security Tab
 
-private struct SecurityTab: View {
+struct SecurityTab: View {
     @AppStorage("settings.allowSudo") private var allowSudo = false
-    @AppStorage("settings.requireApproval") private var requireApproval = true
     @AppStorage("settings.autoApproveThreshold") private var thresholdRaw = RiskLevel.low.rawValue
-    @AppStorage("settings.enableAuditLogs") private var enableAuditLogs = true
 
     private var autoApproveThreshold: Binding<RiskLevel> {
         Binding(
@@ -379,26 +373,15 @@ private struct SecurityTab: View {
                         .foregroundStyle(.orange)
                 }
 
-                Toggle("Require Approval for Risky Actions", isOn: $requireApproval)
-
-                Picker("Auto-Approve Threshold", selection: autoApproveThreshold) {
+                Picker("Risk Threshold", selection: autoApproveThreshold) {
                     ForEach([RiskLevel.low, .medium, .high, .critical], id: \.self) { level in
                         Text(level.displayName).tag(level)
                     }
                 }
 
-                Text("Actions at or below this risk level will be approved automatically.")
+                Text("Operations above this risk level will require extra caution.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            Section("Audit Logging") {
-                Toggle("Enable Audit Logs", isOn: $enableAuditLogs)
-
-                Button("Export Audit Logs…") {
-                    exportAuditLogs()
-                }
-                .disabled(!enableAuditLogs)
             }
 
             Section("Blocked Commands") {
@@ -421,21 +404,11 @@ private struct SecurityTab: View {
         }
         .formStyle(.grouped)
     }
-
-    private func exportAuditLogs() {
-        Task {
-            let logger = AuditLogger.shared
-            let query = AuditQuery()
-            if let url = try? await logger.export(query) {
-                NSWorkspace.shared.open(url)
-            }
-        }
-    }
 }
 
 // MARK: - About Tab
 
-private struct AboutTab: View {
+struct AboutTab: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
@@ -495,7 +468,7 @@ private struct AboutTab: View {
     }
 }
 
-private struct FeatureCell: View {
+struct FeatureCell: View {
     let icon: String
     let color: Color
     let title: String

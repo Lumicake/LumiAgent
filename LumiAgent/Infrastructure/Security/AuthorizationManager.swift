@@ -12,7 +12,7 @@ import Logging
 
 // MARK: - Authorization Manager
 
-/// Manages security, risk assessment, and approval flows
+/// Risk assessment helper for agent tool calls.
 final class AuthorizationManager {
     // MARK: - Singleton
 
@@ -21,8 +21,6 @@ final class AuthorizationManager {
     // MARK: - Properties
 
     private let logger = Logger(label: "com.lumiagent.authorization")
-    private let auditRepository: AuditRepositoryProtocol
-    private let approvalRepository: ApprovalRepositoryProtocol
 
     // Dangerous commands and patterns
     private let dangerousCommands = [
@@ -50,10 +48,7 @@ final class AuthorizationManager {
 
     // MARK: - Initialization
 
-    private init() {
-        self.auditRepository = AuditRepository()
-        self.approvalRepository = ApprovalRepository()
-    }
+    private init() {}
 
     // MARK: - Risk Assessment
 
@@ -140,164 +135,6 @@ final class AuthorizationManager {
         }
 
         logger.info("Command validated: \(command)")
-    }
-
-    // MARK: - Approval Flow
-
-    /// Request approval for an operation
-    func requestApproval(
-        for toolCall: ToolCall,
-        agentId: UUID,
-        sessionId: UUID,
-        policy: SecurityPolicy
-    ) async throws -> ApprovalRequest {
-        // Extract command details
-        let command = toolCall.arguments["command"] ?? ""
-        let target = toolCall.arguments["target"]
-
-        // Assess risk
-        let riskLevel = assessRisk(command: command, target: target, policy: policy)
-
-        // Validate command
-        try validateCommand(command, policy: policy)
-
-        // Create reasoning
-        let reasoning = generateReasoning(
-            command: command,
-            riskLevel: riskLevel,
-            target: target
-        )
-
-        // Create approval request
-        let request = ApprovalRequest(
-            sessionId: sessionId,
-            agentId: agentId,
-            toolCall: toolCall,
-            riskLevel: riskLevel,
-            reasoning: reasoning,
-            estimatedImpact: generateImpact(command: command, target: target),
-            timeout: policy.maxExecutionTime
-        )
-
-        // Save to database
-        try await approvalRepository.create(request)
-
-        // Log audit event
-        await logAudit(
-            eventType: .approvalGranted,
-            severity: .info,
-            agentId: agentId,
-            sessionId: sessionId,
-            action: "Approval requested for: \(command)",
-            target: target,
-            result: .success
-        )
-
-        logger.info("Approval requested: \(request.id)")
-        return request
-    }
-
-    /// Approve a request
-    func approve(
-        requestId: UUID,
-        justification: String?,
-        modifiedCommand: String?
-    ) async throws {
-        guard var request = try await approvalRepository.get(id: requestId) else {
-            throw AuthorizationError.requestNotFound
-        }
-
-        // Check if expired
-        if request.isExpired {
-            throw AuthorizationError.requestExpired
-        }
-
-        // Update request
-        request.status = modifiedCommand != nil ? .modified : .approved
-        request.userDecision = UserDecision(
-            approved: true,
-            justification: justification,
-            modifiedCommand: modifiedCommand
-        )
-        request.decidedAt = Date()
-
-        try await approvalRepository.update(request)
-
-        // Log audit event
-        await logAudit(
-            eventType: .approvalGranted,
-            severity: .info,
-            agentId: request.agentId,
-            sessionId: request.sessionId,
-            action: "Approval granted for: \(request.toolCall.name)",
-            target: request.toolCall.arguments["target"],
-            result: .success
-        )
-
-        logger.info("Approval granted: \(requestId)")
-    }
-
-    /// Deny a request
-    func deny(
-        requestId: UUID,
-        justification: String?
-    ) async throws {
-        guard var request = try await approvalRepository.get(id: requestId) else {
-            throw AuthorizationError.requestNotFound
-        }
-
-        // Update request
-        request.status = .denied
-        request.userDecision = UserDecision(
-            approved: false,
-            justification: justification
-        )
-        request.decidedAt = Date()
-
-        try await approvalRepository.update(request)
-
-        // Log audit event
-        await logAudit(
-            eventType: .approvalDenied,
-            severity: .warning,
-            agentId: request.agentId,
-            sessionId: request.sessionId,
-            action: "Approval denied for: \(request.toolCall.name)",
-            target: request.toolCall.arguments["target"],
-            result: .blocked
-        )
-
-        logger.warning("Approval denied: \(requestId)")
-    }
-
-    // MARK: - Audit Logging
-
-    private func logAudit(
-        eventType: AuditEventType,
-        severity: AuditSeverity,
-        agentId: UUID?,
-        sessionId: UUID?,
-        action: String,
-        target: String?,
-        result: AuditResult
-    ) async {
-        let log = AuditLog(
-            eventType: eventType,
-            severity: severity,
-            agentId: agentId,
-            sessionId: sessionId,
-            userId: NSUserName(),
-            action: action,
-            target: target,
-            result: result,
-            hostname: Host.current().name
-        )
-
-        do {
-            try await auditRepository.log(log)
-        } catch {
-            logger.error("Failed to log audit event: \(error)")
-        }
     }
 
     // MARK: - Helper Methods

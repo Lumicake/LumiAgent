@@ -396,8 +396,13 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
 
         let chatMessages = openAIMessages(from: messages, systemPrompt: systemPrompt)
         var body: [String: Any] = ["model": model, "messages": chatMessages, "stream": stream]
-        if let t = temperature { body["temperature"] = t }
-        if let m = maxTokens  { body["max_tokens"] = m }
+        // o-series and newer models (o1, o3, gpt-5…) use max_completion_tokens
+        let usesCompletionTokens = model.hasPrefix("o1") || model.hasPrefix("o3")
+            || model.hasPrefix("o4") || model.hasPrefix("gpt-5")
+        if let t = temperature, !usesCompletionTokens { body["temperature"] = t }
+        if let m = maxTokens {
+            body[usesCompletionTokens ? "max_completion_tokens" : "max_tokens"] = m
+        }
         if !tools.isEmpty {
             body["tools"] = openAIToolDefs(tools)
             body["tool_choice"] = "auto"

@@ -37,6 +37,9 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log")
             ],
             path: "LumiAgent",
+            resources: [
+                .copy("Resources/Models")
+            ],
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
             ]

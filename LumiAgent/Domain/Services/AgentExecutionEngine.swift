@@ -27,7 +27,6 @@ final class AgentExecutionEngine: ObservableObject {
     private let sessionRepository: SessionRepositoryProtocol
     private let authorizationManager: AuthorizationManager
     private let toolRegistry: ToolRegistry
-    private let auditLogger: AuditLogger
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -37,14 +36,12 @@ final class AgentExecutionEngine: ObservableObject {
         aiRepository: AIProviderRepositoryProtocol = AIProviderRepository(),
         sessionRepository: SessionRepositoryProtocol = SessionRepository(),
         authorizationManager: AuthorizationManager = .shared,
-        toolRegistry: ToolRegistry = .shared,
-        auditLogger: AuditLogger = .shared
+        toolRegistry: ToolRegistry = .shared
     ) {
         self.aiRepository = aiRepository
         self.sessionRepository = sessionRepository
         self.authorizationManager = authorizationManager
         self.toolRegistry = toolRegistry
-        self.auditLogger = auditLogger
     }
 
     // MARK: - Execution
@@ -193,68 +190,15 @@ final class AgentExecutionEngine: ObservableObject {
             return
         }
 
-        // Check if approval is needed
-        if tool.riskLevel > agent.configuration.securityPolicy.autoApproveThreshold {
-            // Request approval
-            let approvalRequest = try await authorizationManager.requestApproval(
-                for: toolCall,
-                agentId: agent.id,
-                sessionId: session.id,
-                policy: agent.configuration.securityPolicy
-            )
-
-            await addStep(
-                .approval,
-                content: "Approval required for: \(toolCall.name) (Risk: \(tool.riskLevel.displayName))"
-            )
-
-            // TODO: Wait for approval
-            // For now, throw error
-            throw ExecutionError.approvalRequired(approvalRequest.id)
-        }
-
         // Execute tool
         do {
             let result = try await tool.handler(toolCall.arguments)
-
             await addStep(.toolResult, content: "Tool result: \(result)")
-
-            // Add tool result to messages
-            messages.append(AIMessage(
-                role: .tool,
-                content: result,
-                toolCallId: toolCall.id
-            ))
-
-            // Log successful execution
-            await auditLogger.logCommandExecution(
-                command: toolCall.name,
-                target: toolCall.arguments["path"] ?? toolCall.arguments["target"],
-                result: .success,
-                agentId: agent.id,
-                sessionId: session.id,
-                details: toolCall.arguments
-            )
-
+            messages.append(AIMessage(role: .tool, content: result, toolCallId: toolCall.id))
         } catch {
             let errorMessage = "Tool execution failed: \(error.localizedDescription)"
             await addStep(.error, content: errorMessage)
-
-            messages.append(AIMessage(
-                role: .tool,
-                content: errorMessage,
-                toolCallId: toolCall.id
-            ))
-
-            // Log failed execution
-            await auditLogger.logCommandExecution(
-                command: toolCall.name,
-                target: toolCall.arguments["path"] ?? toolCall.arguments["target"],
-                result: .failure,
-                agentId: agent.id,
-                sessionId: session.id,
-                details: ["error": error.localizedDescription]
-            )
+            messages.append(AIMessage(role: .tool, content: errorMessage, toolCallId: toolCall.id))
         }
     }
 
@@ -312,7 +256,6 @@ final class AgentExecutionEngine: ObservableObject {
 
 enum ExecutionError: Error, LocalizedError {
     case alreadyExecuting
-    case approvalRequired(UUID)
     case toolNotFound(String)
     case maxIterationsReached
 
@@ -320,8 +263,6 @@ enum ExecutionError: Error, LocalizedError {
         switch self {
         case .alreadyExecuting:
             return "Another execution is already in progress"
-        case .approvalRequired(let requestId):
-            return "Approval required for this operation. Request ID: \(requestId)"
         case .toolNotFound(let name):
             return "Tool not found: \(name)"
         case .maxIterationsReached:

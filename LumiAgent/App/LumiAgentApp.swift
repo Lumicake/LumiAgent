@@ -50,51 +50,52 @@ struct LumiAgentApp: App {
     }
 }
 
-// MARK: - Screen Capture Helper
+// MARK: - Screen Capture
 
-/// Captures the full screen and returns JPEG data scaled to maxWidth pixels wide.
+/// Tool names that visually change the screen — a screenshot is sent to the AI after these.
+private let screenControlToolNames: Set<String> = [
+    "open_application", "click_mouse", "scroll_mouse",
+    "type_text", "press_key", "run_applescript", "take_screenshot"
+]
+
+/// Captures a specific display and returns JPEG data for direct AI vision input.
+/// `displayID` should be the CGDirectDisplayID of the target screen.
 /// Runs synchronously — call from a background thread / Task.detached.
-private func captureScreenForVision(maxWidth: CGFloat = 1440) -> Data? {
+private func captureScreenAsJPEG(maxWidth: CGFloat = 1440, displayID: UInt32? = nil) -> Data? {
     let tmpURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("lumi_vision_\(UUID().uuidString).png")
     defer { try? FileManager.default.removeItem(at: tmpURL) }
 
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    proc.arguments = ["-x", tmpURL.path]   // -x = no shutter sound
+    // Target the specific display so multi-monitor setups don't composite all screens.
+    if let id = displayID {
+        proc.arguments = ["-x", "-D", "\(id)", tmpURL.path]
+    } else {
+        proc.arguments = ["-x", "-m", tmpURL.path]
+    }
     guard (try? proc.run()) != nil else { return nil }
     proc.waitUntilExit()
     guard proc.terminationStatus == 0 else { return nil }
 
-    // Load via CGImageSource (thread-safe)
     guard let src = CGImageSourceCreateWithURL(tmpURL as CFURL, nil),
-          let cg = CGImageSourceCreateImageAtIndex(src, 0, nil)
-    else { return nil }
+          let cg  = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
 
-    // Scale down preserving aspect ratio
     let origW = CGFloat(cg.width), origH = CGFloat(cg.height)
     let scale = min(1.0, maxWidth / origW)
     let tw = Int(origW * scale), th = Int(origH * scale)
 
     let cs = CGColorSpaceCreateDeviceRGB()
-    guard let ctx = CGContext(
-        data: nil, width: tw, height: th,
-        bitsPerComponent: 8, bytesPerRow: 0, space: cs,
-        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-    ) else { return nil }
+    guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8,
+                              bytesPerRow: 0, space: cs,
+                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    else { return nil }
     ctx.interpolationQuality = .high
     ctx.draw(cg, in: CGRect(x: 0, y: 0, width: tw, height: th))
     guard let scaled = ctx.makeImage() else { return nil }
 
-    let rep = NSBitmapImageRep(cgImage: scaled)
-    return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+    return NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
 }
-
-/// Tool names that visually change the screen — a screenshot is worthwhile after these.
-private let screenControlToolNames: Set<String> = [
-    "open_application", "click_mouse", "scroll_mouse",
-    "type_text", "press_key", "run_applescript", "take_screenshot"
-]
 
 // MARK: - App State
 
@@ -143,6 +144,15 @@ class AppState: ObservableObject {
     @Published var toolCallHistory: [ToolCallRecord] = []
     @Published var selectedHistoryAgentId: UUID?
 
+    // MARK: - Automations
+    @Published var automations: [AutomationRule] = [] {
+        didSet { saveAutomations() }
+    }
+    @Published var selectedAutomationId: UUID?
+
+    // MARK: - Settings navigation (sidebar → detail pane)
+    @Published var selectedSettingsSection: String? = "apiKeys"
+
     // MARK: - Screen Control State
     /// True while the agent is actively running tools in Agent Mode.
     @Published var isAgentControllingScreen = false
@@ -151,15 +161,19 @@ class AppState: ObservableObject {
     /// Stored Task handles so we can cancel them from the Stop button.
     private var screenControlTasks: [Task<Void, Never>] = []
 
-    private let conversationsKey = "lumiagent.conversations"
+    private let conversationsKey  = "lumiagent.conversations"
+    private let automationsKey    = "lumiagent.automations"
+    private var automationEngine: AutomationEngine?
 
     init() {
         _ = DatabaseManager.shared
         loadAgents()
         loadConversations()
+        loadAutomations()
         // Register ⌘L global hotkey after init completes
         DispatchQueue.main.async { [weak self] in
             self?.setupGlobalHotkey()
+            self?.startAutomationEngine()
         }
     }
 
@@ -193,6 +207,49 @@ class AppState: ObservableObject {
 
         // Bring our window to front so the user sees the response
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Automation management
+
+    private func startAutomationEngine() {
+        automationEngine = AutomationEngine { [weak self] rule in
+            self?.fireAutomation(rule)
+        }
+        automationEngine?.update(rules: automations)
+    }
+
+    func createAutomation() {
+        let rule = AutomationRule(agentId: agents.first?.id)
+        automations.insert(rule, at: 0)
+        selectedAutomationId = rule.id
+    }
+
+    func runAutomation(id: UUID) {
+        guard let rule = automations.first(where: { $0.id == id }) else { return }
+        automationEngine?.runManually(rule)
+    }
+
+    private func fireAutomation(_ rule: AutomationRule) {
+        guard rule.isEnabled, let agentId = rule.agentId else { return }
+        let prompt = rule.notes.isEmpty
+            ? "Execute the automation titled: \"\(rule.title)\""
+            : "Execute this automation task:\n\n\(rule.notes)"
+        sendCommandPaletteMessage(text: prompt, agentId: agentId)
+        // Record last-run timestamp
+        if let idx = automations.firstIndex(where: { $0.id == rule.id }) {
+            automations[idx].lastRunAt = Date()
+        }
+    }
+
+    private func loadAutomations() {
+        guard let data = UserDefaults.standard.data(forKey: automationsKey),
+              let saved = try? JSONDecoder().decode([AutomationRule].self, from: data) else { return }
+        automations = saved
+    }
+
+    private func saveAutomations() {
+        guard let data = try? JSONEncoder().encode(automations) else { return }
+        UserDefaults.standard.set(data, forKey: automationsKey)
     }
 
     func recordToolCall(agentId: UUID, agentName: String, toolName: String,
@@ -440,21 +497,51 @@ class AppState: ObservableObject {
                 • Memory across turns   → memory_save, memory_read
 
                 ═══ SCREEN CONTROL ═══
-                • Prefer run_applescript for in-app UI (more reliable than raw mouse clicks).
-                • AppleScript pattern:
+                • Screen origin is top-left (0,0). Coordinates are logical pixels (1:1 with screenshot).
+                • When you receive a screenshot, look at the image carefully and read the EXACT pixel
+                  position of the element — do NOT approximate or guess. State the pixel coords before clicking.
+
+                PRIORITY ORDER for UI interaction:
+                  1. run_applescript — interact by element name, no coordinates needed (most reliable)
+                  2. JavaScript via AppleScript — for web browsers (never misses, not affected by zoom)
+                  3. click_mouse — pixel click, last resort only
+
+                AppleScript — native app UI:
                     tell application "AppName" to activate
                     delay 0.8
                     tell application "System Events"
                         tell process "AppName"
+                            click button "Button Name" of window 1
                             set value of text field 1 of window 1 to "text"
                             key code 36  -- Return
                         end tell
                     end tell
-                • Fallback: take_screenshot → read coordinates → click_mouse / type_text.
-                • Screen origin is top-left (0,0). Call get_screen_info to get dimensions.
+
+                JavaScript via AppleScript — web browsers (ALWAYS prefer this over click_mouse in browsers):
+                    -- Click a tab / link by text or selector:
+                    tell application "Google Chrome"
+                        tell active tab of front window
+                            execute javascript "document.querySelector('a[href*=\"/images\"]').click()"
+                        end tell
+                    end tell
+                    -- Or navigate directly (most reliable):
+                    tell application "Google Chrome"
+                        set URL of active tab of front window to "https://www.bing.com/images/search?q=cats"
+                    end tell
+                    -- Safari equivalent: execute javascript / set URL of current tab of front window
+
+                ═══ WHEN AN ACTION FAILS ═══
+                If a click or action doesn't produce the expected result:
+                  1. NEVER repeat the identical click at "slightly adjusted" coordinates — that rarely works.
+                  2. NEVER tell the user to click manually — try a different method instead.
+                  3. For browser clicks that failed → switch to JavaScript or navigate by URL directly.
+                  4. For native app clicks that failed → switch to System Events AppleScript by element name.
+                  5. If still failing after 2 attempts → take_screenshot, re-read the full UI, pick a completely
+                     different approach (e.g. keyboard shortcut, menu item, URL navigation).
+                  6. Only after exhausting ALL automated approaches may you report that the action failed.
 
                 ═══ ABSOLUTE RULES ═══
-                1. NEVER tell the user to "manually" do anything.
+                1. NEVER tell the user to "manually" do anything — not clicking, typing, or any interaction.
                 2. NEVER stop after one tool call and ask what to do next — keep executing until the full task is done.
                 3. NEVER leave a task half-finished. If a step fails, try an alternative approach.
                 4. Desktop path: use execute_command("echo $HOME") to get the user's home, then write to $HOME/Desktop/.
@@ -526,15 +613,16 @@ class AppState: ObservableObject {
                     ))
 
                     if let content = response.content, !content.isEmpty {
-                        finalContent = content
-                        updatePlaceholder(content)
+                        finalContent += (finalContent.isEmpty ? "" : "\n\n") + content
+                        updatePlaceholder(finalContent)
                     }
 
                     guard let toolCalls = response.toolCalls, !toolCalls.isEmpty else { break }
 
-                    // Show which tools are running
+                    // Show which tools are running (appended so prior content stays visible)
                     let names = toolCalls.map { $0.name }.joined(separator: ", ")
-                    updatePlaceholder("Running: \(names)…")
+                    finalContent += (finalContent.isEmpty ? "" : "\n\n") + "Running: \(names)…"
+                    updatePlaceholder(finalContent)
 
                     // Track whether this batch touched the screen
                     var touchedScreen = false
@@ -567,31 +655,39 @@ class AppState: ObservableObject {
                         }
                     }
 
-                    // ── Vision feedback loop ──────────────────────────────
-                    // After any batch that changed the screen, capture a
-                    // screenshot and inject it as the next user vision message
-                    // so the AI can see exactly what's on screen and decide
-                    // the next action precisely.
+                    // ── Post-action screenshot → AI vision ───────────────────
+                    // After any screen-touching tool, capture the main display and
+                    // send the raw screenshot to the model. Vision-capable models
+                    // (GPT-4o, Claude, Gemini) read the image and decide what to
+                    // click / type next without any intermediate parsing.
                     if agentMode && touchedScreen && !Task.isCancelled {
-                        updatePlaceholder((finalContent.isEmpty ? "" : finalContent + "\n\n") +
-                                          "📸 Capturing screen to see current state…")
-
                         // Give the UI time to settle before capturing
                         try? await Task.sleep(nanoseconds: 900_000_000) // 0.9 s
 
-                        // Capture off the main actor so Process doesn't block the run loop
-                        let screenshotData = await Task.detached(priority: .userInitiated) {
-                            captureScreenForVision(maxWidth: 1440)
-                        }.value
+                        finalContent += (finalContent.isEmpty ? "" : "\n\n") + "📸 Capturing screen…"
+                        updatePlaceholder(finalContent)
 
-                        if let data = screenshotData {
+                        let (screen, displayID) = await MainActor.run { () -> (CGRect, UInt32) in
+                            let frame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+                            let id = (NSScreen.main?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)
+                                .map { UInt32($0.uint32Value) } ?? CGMainDisplayID()
+                            return (frame, id)
+                        }
+                        let screenW = Int(screen.width), screenH = Int(screen.height)
+                        let jpeg = await Task.detached(priority: .userInitiated) {
+                            captureScreenAsJPEG(maxWidth: 1440, displayID: displayID)
+                        }.value
+                        if let data = jpeg {
                             aiMessages.append(AIMessage(
                                 role: .user,
                                 content: "Here is the current screen state after your last actions. " +
-                                         "Look at the screenshot carefully: identify every visible UI element, " +
-                                         "button, text field, and icon with its approximate screen position. " +
-                                         "Then continue the task — decide what to click, type, or do next, " +
-                                         "and call the appropriate tool(s).",
+                                         "Resolution: \(screenW)×\(screenH) logical px — coordinates are 1:1, " +
+                                         "top-left origin (0,0). Use pixel positions from this image directly " +
+                                         "with click_mouse — no scaling needed. " +
+                                         "Identify every visible UI element and decide what to do next. " +
+                                         "Tip: run_applescript can interact with UI elements by name " +
+                                         "(click buttons, fill fields, choose menu items) without needing " +
+                                         "pixel coordinates — prefer it when the app supports it.",
                                 imageData: data
                             ))
                         }
@@ -617,23 +713,21 @@ class AppState: ObservableObject {
 // MARK: - Sidebar Item
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case agents = "Agents"
+    case agents     = "Agents"
     case agentSpace = "Agent Space"
-    case history = "History"
-    case queue = "Approval Queue"
-    case audit = "Audit Logs"
-    case settings = "Settings"
+    case history    = "History"
+    case automation = "Automations"
+    case settings   = "Settings"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
-        case .agents: return "cpu"
+        case .agents:     return "cpu"
         case .agentSpace: return "bubble.left.and.bubble.right.fill"
-        case .history: return "clock.arrow.circlepath"
-        case .queue: return "checkmark.shield"
-        case .audit: return "doc.text.magnifyingglass"
-        case .settings: return "gear"
+        case .history:    return "clock.arrow.circlepath"
+        case .automation: return "bolt.horizontal"
+        case .settings:   return "gear"
         }
     }
 }

@@ -28,21 +28,3 @@ protocol SessionRepositoryProtocol {
     func getRecent(limit: Int) async throws -> [ExecutionSession]
 }
 
-// MARK: - Approval Repository Protocol
-
-protocol ApprovalRepositoryProtocol {
-    func create(_ request: ApprovalRequest) async throws
-    func update(_ request: ApprovalRequest) async throws
-    func get(id: UUID) async throws -> ApprovalRequest?
-    func getPending() async throws -> [ApprovalRequest]
-    func getForSession(sessionId: UUID) async throws -> [ApprovalRequest]
-    func expireOldRequests() async throws
-}
-
-// MARK: - Audit Repository Protocol
-
-protocol AuditRepositoryProtocol {
-    func log(_ entry: AuditLog) async throws
-    func query(_ query: AuditQuery) async throws -> [AuditLog]
-    func export(query: AuditQuery) async throws -> URL
-}
