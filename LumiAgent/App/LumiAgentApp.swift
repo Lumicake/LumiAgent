@@ -387,22 +387,25 @@ class AppState: ObservableObject {
         let conv = conversations[index]
         let participants = agents.filter { conv.participantIds.contains($0.id) }
 
-        // Determine targets: @mentioned agents, or all participants if none mentioned
+        // Determine targets.
+        // @mentioned agents all respond simultaneously.
+        // In a multi-agent group with no @mention, only the first participant (the "lead")
+        // responds initially; it can then delegate to others via @mentions in its reply.
         let mentioned = participants.filter { text.contains("@\($0.name)") }
-        let targets = mentioned.isEmpty ? participants : mentioned
+        let targets: [Agent] = mentioned.isEmpty && participants.count > 1
+            ? Array(participants.prefix(1))
+            : (mentioned.isEmpty ? participants : mentioned)
 
         for agent in targets {
             let history = conv.messages.filter { !$0.isStreaming }
             let task = Task {
                 await streamResponse(from: agent, in: conversationId, history: history, agentMode: agentMode)
             }
-            if agentMode {
-                screenControlTasks.append(task)
-            }
+            screenControlTasks.append(task)
         }
     }
 
-    private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false) async {
+    private func streamResponse(from agent: Agent, in conversationId: UUID, history: [SpaceMessage], agentMode: Bool = false, delegationDepth: Int = 0) async {
         guard let index = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
 
         // Only raise the screen-control flag when a screen tool is actually called,
@@ -548,9 +551,38 @@ class AppState: ObservableObject {
                 """)
             }
             if isGroup {
-                let others = convParticipants.filter { $0.id != agent.id }.map { $0.name }
+                let others = convParticipants.filter { $0.id != agent.id }
                 if !others.isEmpty {
-                    parts.append("You are \(agent.name). You are in a group chat with: \(others.joined(separator: ", ")). Their messages appear prefixed with [Name]:.")
+                    let peerList = others.map { other -> String in
+                        let role = other.configuration.systemPrompt
+                            .flatMap { $0.isEmpty ? nil : String($0.prefix(120)) }
+                            ?? "General assistant"
+                        return "• \(other.name): \(role)"
+                    }.joined(separator: "\n")
+                    parts.append("""
+                    You are \(agent.name). You are in a multi-agent group conversation.
+
+                    ═══ PARTICIPANTS ═══
+                    \(peerList)
+                    • You: \(agent.name)
+
+                    Other agents' messages appear in the conversation prefixed with [AgentName]:
+
+                    ═══ MULTI-AGENT COLLABORATION ═══
+                    Before responding, reason about who is best placed to handle this task:
+                    • If it's entirely yours → complete it fully.
+                    • If another agent is better suited → delegate: "@AgentName: <specific task>"
+                    • If the task splits cleanly → do your part, then "@AgentName: <their part>"
+                    • For truly independent subtasks → @mention multiple agents in one message (they run in parallel)
+                    • To hand off your results → "@AgentName: Here's what I found — please continue/synthesise."
+
+                    DELEGATION RULES:
+                    1. Always complete your own portion BEFORE delegating.
+                    2. If you receive a delegation (you see @\(agent.name): in the conversation), execute it fully — do not re-delegate.
+                    3. Be specific in delegations: give the other agent exactly what they need.
+                    4. Depth limit is 4 hops — at deep nesting just complete the task yourself.
+                    5. One agent must eventually write the final answer to the user.
+                    """)
                 }
             }
             if let base = agent.configuration.systemPrompt, !base.isEmpty { parts.append(base) }
@@ -706,6 +738,37 @@ class AppState: ObservableObject {
         }
         if let ci = conversations.firstIndex(where: { $0.id == conversationId }) {
             conversations[ci].updatedAt = Date()
+        }
+
+        // ── Agent-to-agent delegation ─────────────────────────────────────────
+        // After this agent's message is final, scan it for @mentions of other
+        // participants. Each mentioned agent is triggered with the full updated
+        // history so they see this agent's message and can act on the delegation.
+        // Capped at depth 4 to prevent infinite loops.
+        if isGroup && delegationDepth < 4 && !Task.isCancelled,
+           let ci = conversations.firstIndex(where: { $0.id == conversationId }),
+           let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
+            let agentResponse = conversations[ci].messages[mi].content
+            let delegatedAgents = convParticipants.filter { other in
+                other.id != agent.id &&
+                agentResponse.range(of: "@\(other.name)", options: .caseInsensitive) != nil
+            }
+            if !delegatedAgents.isEmpty {
+                let freshHistory = conversations[ci].messages.filter { !$0.isStreaming }
+                for target in delegatedAgents {
+                    let t = Task { [weak self] in
+                        guard let self else { return }
+                        await self.streamResponse(
+                            from: target,
+                            in: conversationId,
+                            history: freshHistory,
+                            agentMode: agentMode,
+                            delegationDepth: delegationDepth + 1
+                        )
+                    }
+                    screenControlTasks.append(t)
+                }
+            }
         }
     }
 }

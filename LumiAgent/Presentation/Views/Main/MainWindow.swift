@@ -709,6 +709,15 @@ private struct AutomationEditorView: View {
                     .buttonStyle(.borderedProminent)
                 }
 
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                    Text("Always runs in Agent Mode")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let last = rule.lastRunAt {
                     Text("Last run: \(last.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption).foregroundStyle(.tertiary)
