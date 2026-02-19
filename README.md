@@ -4,7 +4,8 @@
 
 **By LumiTech Group**
 
-<img width="1392" height="764" alt="Screenshot 2026-02-18 at 3 31 09 PM" src="https://github.com/user-attachments/assets/ba6be5db-a672-485e-a1f9-2d94ccccbb23" />
+
+<img width="1211" height="764" alt="Screenshot 2026-02-20 at 1 12 55 AM" src="https://github.com/user-attachments/assets/d824314e-019f-47a6-a70a-47c9cd54161b" />
 
 ---
 
