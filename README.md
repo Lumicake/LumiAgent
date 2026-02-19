@@ -65,6 +65,8 @@ Activate **Agent Mode** in any direct message to grant the agent full control of
 | `take_screenshot` | Capture the screen so the agent can observe state |
 
 > Requires **Accessibility access**: System Settings → Privacy & Security → Accessibility → Lumi Agent
+<img width="1392" height="764" alt="Screenshot 2026-02-20 at 1 05 52 AM" src="https://github.com/user-attachments/assets/4c2d0fc5-16eb-42bc-b286-9fb32db7ccd1" />
+
 
 ### Built-in Tool Library
 
