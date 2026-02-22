@@ -22,6 +22,9 @@ import Combine
 @MainActor
 public final class MacRemoteClient: ObservableObject {
 
+    // MARK: - Singleton (used by AppIntents which need a shared connection)
+    public static let shared = MacRemoteClient()
+
     // MARK: - Published
 
     @Published public private(set) var state: MacDevice.ConnectionState = .disconnected

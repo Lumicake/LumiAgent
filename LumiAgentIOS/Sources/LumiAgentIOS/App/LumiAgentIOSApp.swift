@@ -26,6 +26,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 
 @main
 struct LumiAgentIOSApp: App {

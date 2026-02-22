@@ -3,10 +3,11 @@
 //  LumiAgentIOS
 //
 //  Root tab bar for the iOS app.
-//  Three tabs:
+//  Four tabs:
 //    1. Device Control  — local brightness, volume, media, weather, messages
 //    2. Mac Remote      — discover and control nearby macOS LumiAgent hosts
-//    3. About           — build info and setup tips
+//    3. Shortcuts       — Siri/Shortcuts actions + keyboard shortcut reference
+//    4. About           — build info and setup tips
 //
 
 import SwiftUI
@@ -14,6 +15,9 @@ import SwiftUI
 // MARK: - Content View
 
 public struct ContentView: View {
+
+    @State private var mediaController = IOSMediaController.shared
+    @State private var composeRequest: MessageComposeRequest?
 
     public init() {}
 
@@ -29,11 +33,25 @@ public struct ContentView: View {
                     Label("Mac Remote", systemImage: "desktopcomputer")
                 }
 
+            ShortcutsIntegrationView()
+                .tabItem {
+                    Label("Shortcuts", systemImage: "square.grid.2x2.fill")
+                }
+
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
         }
+        // ── Hardware keyboard shortcuts (iPad + external keyboard) ─────────────
+        // These work system-wide while the app is active.
+        .onKeyPress(.space) { mediaController.togglePlayPause(); return .handled }
+        .background(KeyboardShortcutsReceiver(mediaController: mediaController))
+        // ── ComposeSMSIntent notification ──────────────────────────────────────
+        .onReceive(NotificationCenter.default.publisher(for: .lumiComposeMessage)) { note in
+            composeRequest = note.object as? MessageComposeRequest
+        }
+        .messageComposeSheet($composeRequest)
     }
 }
 
@@ -153,4 +171,95 @@ private struct PlistRow: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+// MARK: - Hardware Keyboard Shortcuts Receiver
+
+/// UIViewRepresentable that installs UIKeyCommands for the full command set.
+/// SwiftUI's `.keyboardShortcut()` requires a focusable Button, which isn't
+/// always present. UIKeyCommand works unconditionally on iPad with a keyboard.
+struct KeyboardShortcutsReceiver: UIViewRepresentable {
+    let mediaController: IOSMediaController
+
+    func makeUIView(context: Context) -> KeyCommandView {
+        let view = KeyCommandView(mediaController: mediaController)
+        return view
+    }
+
+    func updateUIView(_ uiView: KeyCommandView, context: Context) {}
+}
+
+final class KeyCommandView: UIView {
+    private let mediaController: IOSMediaController
+
+    init(mediaController: IOSMediaController) {
+        self.mediaController = mediaController
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isUserInteractionEnabled = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            // Media
+            cmd(.rightArrow, modifiers: .command, title: "Next Track") { [weak self] in
+                self?.mediaController.nextTrack()
+            },
+            cmd(.leftArrow,  modifiers: .command, title: "Previous Track") { [weak self] in
+                self?.mediaController.previousTrack()
+            },
+            // Volume
+            cmd(.upArrow,   modifiers: .command, title: "Volume Up") { [weak self] in
+                self?.mediaController.increaseVolume()
+            },
+            cmd(.downArrow, modifiers: .command, title: "Volume Down") { [weak self] in
+                self?.mediaController.decreaseVolume()
+            },
+            // Brightness
+            cmd(.upArrow,   modifiers: [.command, .alternate], title: "Brightness Up") {
+                Task { @MainActor in await IOSBrightnessController.shared.increaseBrightness() }
+            },
+            cmd(.downArrow, modifiers: [.command, .alternate], title: "Brightness Down") {
+                Task { @MainActor in await IOSBrightnessController.shared.decreaseBrightness() }
+            },
+        ]
+    }
+
+    private func cmd(
+        _ key: UIKeyCommand.inputType,
+        modifiers: UIKeyModifierFlags,
+        title: String,
+        action block: @escaping () -> Void
+    ) -> UIKeyCommand {
+        let sel = makeSelector(for: block)
+        return UIKeyCommand(
+            title: title,
+            image: nil,
+            action: sel,
+            input: key,
+            modifierFlags: modifiers,
+            propertyList: nil
+        )
+    }
+}
+
+// UIKeyCommand.inputType alias for string literals
+extension UIKeyCommand {
+    typealias inputType = String
+}
+
+// Lightweight selector factory — each call creates a unique ObjC method on KeyCommandView.
+private var blockStore: [String: () -> Void] = [:]
+private func makeSelector(for block: @escaping () -> Void) -> Selector {
+    let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    let selName = "lumiKey_\(uuid)"
+    blockStore[selName] = block
+    let imp: IMP = imp_implementationWithBlock({ _ in blockStore[selName]?() } as @convention(block) (AnyObject) -> Void)
+    let sel = NSSelectorFromString(selName)
+    class_addMethod(KeyCommandView.self, sel, imp, "v@:")
+    return sel
 }
